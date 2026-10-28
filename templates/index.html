@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8"><title>Syncer</title>
+  </head>
+  
+  <body>
+    <h1>Syncer</h1>
+ 
+    <h2>Spotify</h2>
+    {% if spotify %}
+      <p>Connected. <a href="/logout/spotify">Log out</a></p>
+      <ul>{% for name in spotify %}<li>{{ name }}</li>{% endfor %}</ul>
+    {% else %}
+      <p>
+        <a href="/login/spotify">Log in with Spotify</a>
+      </p>
+    {% endif %}
+
+    <h2>YouTube</h2>
+    {% if youtube %}
+      <p>Connected. <a href="/logout/youtube">Log out</a></p>
+      <ul>{% for name in youtube %}<li>{{ name }}</li>{% endfor %}</ul>
+    {% else %}
+      <p><a href="/login/youtube">Log in with Google</a></p>
+    {% endif %}
+    
+  </body>
+</html>
+

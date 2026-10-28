@@ -1,0 +1,7 @@
+.env
+.cache*
+token*.json
+client_secret*.json
+.venv/
+__pycache__/
+node_modules/

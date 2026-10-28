@@ -1,0 +1,5 @@
+spotipy
+google-api-python-client
+google-auth-oauthlib
+python-dotenv
+flask

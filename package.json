@@ -1,0 +1,8 @@
+{
+  "name": "syncer",
+  "private": true,
+  "scripts": {
+    "setup": "python -m venv .venv && .venv\\Scripts\\python.exe -m pip install -r requirements.txt",
+    "dev": ".venv\\Scripts\\python.exe app.py"
+  }
+}
