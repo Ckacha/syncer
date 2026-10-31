@@ -123,7 +123,7 @@ def title_points(name, sp_title):
 
 def score(video, names, artists, is_topic, track, artist_hit=False):
     sp_title = normalize(track["name"])
-    points = max(title_points(n, sp_title) for n in names)
+    points = max((title_points(n, sp_title) for n in names), default=0)
 
     sp_artists = [normalize(a["name"]) for a in track["artists"]]
     yt_artists = [normalize(a) for a in artists]
@@ -190,3 +190,58 @@ def bucket(score):
     if score >= REVIEW:
         return "review"
     return "skip"
+
+# spotify -> youtube
+
+def spotify_playlist_tracks(sp, playlist_id):
+    tracks = []
+    page = sp.playlist_items(playlist_id, limit=100, additional_types=("track",))
+    while page:
+        for entry in page["items"]:
+            t = entry.get("item") or entry.get("track")  # newer api renamed track -> item
+            if not t or t.get("type") != "track" or not t.get("id"):
+                continue  # podcasts, local files
+            tracks.append({
+                "track_id": t["id"],
+                "track_name": t["name"],
+                "artists": [a["name"] for a in t["artists"]],
+                "track_artists": ", ".join(a["name"] for a in t["artists"]),
+                "duration_s": t["duration_ms"] // 1000,
+            })
+        page = sp.next(page) if page["next"] else None
+    return tracks
+
+def find_video(yt, track):
+    """One youtube search per track, it costs 100 of the 10k daily quota so no retries with other queries."""
+    artist = track["artists"][0] if track["artists"] else ""
+    resp = yt.search().list(part="id", q=f"{artist} {track['track_name']}", type="video", maxResults=5).execute()
+    ids = [item["id"]["videoId"] for item in resp["items"]]
+
+    # pretend the track came from spotify search so score() works unchanged
+    as_spotify = {
+        "name": track["track_name"],
+        "artists": [{"name": a} for a in track["artists"]],
+        "duration_ms": track["duration_s"] * 1000,
+    }
+    best, best_score = None, 0
+    if ids:
+        details = yt.videos().list(part="contentDetails,snippet", id=",".join(ids)).execute()["items"]
+        for item in details:
+            video = {
+                "video_id": item["id"],
+                "title": item["snippet"]["title"],
+                "channel": item["snippet"]["channelTitle"],
+                "duration_s": parse_iso_duration(item["contentDetails"]["duration"]),
+            }
+            names, artists, is_topic = parse_video(video["title"], video["channel"])
+            s = score(video, names, artists, is_topic, as_spotify)
+            if s > best_score:
+                best, best_score = video, s
+
+    return {
+        **track,
+        "video_id": best["video_id"] if best else None,
+        "video_title": best["title"] if best else None,
+        "video_channel": best["channel"] if best else None,
+        "score": best_score,
+    }

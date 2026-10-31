@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8"><title>Transfer</title>
+  </head>
+
+  <body>
+    {% for msg in get_flashed_messages() %}
+      <p style="background:#fff3cd;padding:8px">{{ msg }}</p>
+    {% endfor %}
+
+    {% if not d %}
+      <p><a href="/">&larr; Back</a></p>
+      <h1>Transfer</h1>
+      <p>Which way?</p>
+      {% for option in directions %}
+        <p>
+          <a href="/transfer?dir={{ option.slug }}">
+            <button style="font-size:1.2em;padding:8px 24px">{{ option.source }} &rarr; {{ option.dest }}</button>
+          </a>
+        </p>
+      {% endfor %}
+    {% else %}
+      <p><a href="/transfer">&larr; Pick a different direction</a></p>
+      <h1>{{ d.source }} &rarr; {{ d.dest }}</h1>
+      <p><small>{{ d.cost_note }}</small></p>
+
+      <h2>Paste a playlist link</h2>
+      <form action="/transfer/{{ d.slug }}/open">
+        <input name="playlist" size="60" placeholder="Any public {{ d.source }} playlist link" required>
+        <button>Open</button>
+      </form>
+
+      <h2>Or pick one of yours</h2>
+      <ul>
+        {% for p in playlists %}
+          <li><a href="/transfer/{{ d.slug }}/{{ p.id }}">{{ p.title }}</a></li>
+        {% else %}
+          <li>No playlists on this account.</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </body>
+</html>

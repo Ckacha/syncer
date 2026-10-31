@@ -6,8 +6,14 @@
 
   <body>
     <h1>Created "{{ name }}"</h1>
-    <p>Added {{ count }} songs.</p>
-    <p><a href="{{ url }}">Open it in Spotify</a></p>
-    <p><a href="/preview/{{ playlist_id }}">&larr; Back to the preview</a></p>
+    <p>Added {{ added }} of {{ total }} songs.</p>
+    {% if added < total %}
+      <p style="background:#fff3cd;padding:8px">
+        YouTube's daily quota ran out partway. The playlist has the first {{ added }} songs,
+        add the rest by hand or import again after midnight Pacific time.
+      </p>
+    {% endif %}
+    <p><a href="{{ url }}">Open it in {{ d.dest }}</a></p>
+    <p><a href="{{ back }}">&larr; Back to the review</a></p>
   </body>
 </html>

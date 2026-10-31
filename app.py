@@ -1,13 +1,14 @@
 import os
-import re
 import secrets
 
-from flask import Flask, abort, redirect, render_template, request, session
+from flask import Flask, abort, flash, redirect, render_template, request, session
 from google_auth_oauthlib.flow import Flow
+from googleapiclient.errors import HttpError
 from spotipy.exceptions import SpotifyException
 
 import matcher
 import store
+from transfer import DIRECTIONS, blocked_message
 from auth import (
     GOOGLE_CLIENT_SECRETS_FILE,
     YOUTUBE_SCOPES,
@@ -22,133 +23,137 @@ from auth import (
 os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
 
 GOOGLE_REDIRECT_URI = "http://127.0.0.1:8888/google/callback"
-BATCH_SIZE = 10    
-BATCH_DELAY_S = 10  
+BATCH_SIZE = 10  # songs searched per click of "Scan next"
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
 
-def spotify_playlist_names():
-    sp = spotify_client()
-    names = []
-    page = sp.current_user_playlists(limit=50)
-    while page:
-        names += [p["name"] for p in page["items"]]
-        page = sp.next(page) if page["next"] else None
-    return names
+def connected():
+    return spotify_logged_in(), load_youtube_creds() is not None
 
-def youtube_playlists():
-    yt = youtube_client()
-    playlists = []
-    req = yt.playlists().list(part="snippet", mine=True, maxResults=50)
-    while req:
-        resp = req.execute()
-        playlists += [{"id": p["id"], "title": p["snippet"]["title"]} for p in resp["items"]]
-        req = yt.playlists().list_next(req, resp)
-    return playlists
+def direction(slug):
+    if slug not in DIRECTIONS:
+        abort(404)
+    if not all(connected()):
+        flash("Log in to both Spotify and YouTube first.")
+        abort(redirect("/"))
+    return DIRECTIONS[slug](youtube_client(), spotify_client())
+
+def save_ticks(d, db):
+    """The form lists every scanned row in playlist order, ticked ones are confirmed."""
+    keys = request.form.getlist("key")
+    ticked = set(request.form.getlist("confirm"))
+    store.set_approved(db, {k: k in ticked for k in keys}, d.table)
+    return [k for k in keys if k in ticked]
 
 @app.route("/")
 def home():
-    spotify = spotify_playlist_names() if spotify_logged_in() else None
-    youtube = youtube_playlists() if load_youtube_creds() else None
+    spotify, youtube = connected()
     return render_template("index.html", spotify=spotify, youtube=youtube)
 
-def playlist_id_from(text):
-    """Accepts a full playlist/video url with ?list=... or a bare playlist id."""
-    text = text.strip()
-    m = re.search(r"[?&]list=([\w-]+)", text)
-    if m:
-        return m.group(1)
-    return text if re.fullmatch(r"[\w-]+", text) else None
+@app.route("/transfer")
+def transfer_start():
+    slug = request.args.get("dir")
+    if slug is None:
+        return render_template("transfer.html", d=None, directions=DIRECTIONS.values())
+    d = direction(slug)
+    return render_template("transfer.html", d=d, playlists=d.my_playlists())
 
-@app.route("/preview")
-def preview_from_link():
-    playlist_id = playlist_id_from(request.args.get("playlist", ""))
+@app.route("/transfer/<slug>/open")
+def transfer_open(slug):
+    d = direction(slug)
+    playlist_id = d.playlist_id_from(request.args.get("playlist", ""))
     if not playlist_id:
-        abort(400, "That doesn't look like a YouTube playlist link.")
-    return redirect(f"/preview/{playlist_id}")
+        flash(f"That doesn't look like a {d.source} playlist link.")
+        return redirect(f"/transfer?dir={slug}")
+    return redirect(f"/transfer/{slug}/{playlist_id}")
 
-@app.route("/preview/<playlist_id>")
-def preview(playlist_id):
-    if not (spotify_logged_in() and load_youtube_creds()):
-        return redirect("/")
-    yt, sp, db = youtube_client(), spotify_client(), store.connect()
+@app.route("/transfer/<slug>/<playlist_id>")
+def transfer_review(slug, playlist_id):
+    d, db = direction(slug), store.connect()
+    loaded = d.load(playlist_id)
+    if loaded is None:
+        flash(f"Couldn't open that {d.source} playlist. It might be private"
+              + (", or a YouTube Mix (those can't be read)." if d.source == "YouTube" else "."))
+        return redirect(f"/transfer?dir={slug}")
+    title, items = loaded
 
-    meta = yt.playlists().list(part="snippet", id=playlist_id).execute()["items"]
-    if not meta:
-        abort(404, "Playlist not found. It might be private, or a YouTube Mix (those can't be read).")
-    playlist_title = meta[0]["snippet"]["title"]
+    rows = []
+    for item in items:
+        match = store.get_match(db, d.key(item), d.table)
+        row = d.row(item, match)
+        row["scanned"] = match is not None
+        if match:
+            row["score"] = match["score"]
+            row["bucket"] = matcher.bucket(match["score"])
+            # ticked by default only for auto-adds, after that whatever the user last saved wins
+            approved = match.get("approved")
+            row["checked"] = bool(row["dst_id"]) and (
+                approved == 1 or (approved is None and row["bucket"] == "auto")
+            )
+        rows.append(row)
 
-    videos = matcher.youtube_playlist_videos(yt, playlist_id)
-    if request.args.get("rescan") == "1":
-        store.delete_matches(db, [v["video_id"] for v in videos])
-        return redirect(f"/preview/{playlist_id}")
-
-    matches, rate_limited, searched = [], None, 0
-    for video in videos:
-        match = store.get_match(db, video["video_id"])
-        if match is None:
-            if rate_limited or searched >= BATCH_SIZE:
-                continue
-            searched += 1
-            try:
-                match = matcher.find_match(sp, video)
-            except SpotifyException as e:
-                if e.http_status != 429:
-                    raise
-                wait = int((e.headers or {}).get("Retry-After", 0))
-                rate_limited = f"{wait // 3600}h {wait % 3600 // 60}m" if wait else "a while"
-                continue
-            store.save_match(db, match)
-        match["bucket"] = matcher.bucket(match["score"])
-        approved = match.get("approved")
-        match["checked"] = bool(match["spotify_id"]) and (
-            approved == 1 or (approved is None and match["bucket"] == "auto")
-        )
-        matches.append(match)
-
-    counts = {b: sum(m["bucket"] == b for m in matches) for b in ("auto", "review", "skip")}
+    scanned = [r for r in rows if r["scanned"]]
+    counts = {b: sum(r["bucket"] == b for r in scanned) for b in ("auto", "review", "skip")}
+    ticked = sum(r["checked"] for r in scanned)
     return render_template(
-        "preview.html", playlist_title=playlist_title, matches=matches, counts=counts,
-        rate_limited=rate_limited, unscanned=len(videos) - len(matches), total=len(videos),
-        batch_delay=BATCH_DELAY_S, playlist_id=playlist_id,
+        "preview.html", d=d, playlist_id=playlist_id, title=title, rows=rows,
+        counts=counts, scanned=len(scanned), ticked=ticked, batch=BATCH_SIZE,
     )
 
-@app.route("/import/<playlist_id>", methods=["POST"])
-def import_playlist(playlist_id):
-    if not spotify_logged_in():
-        return redirect("/")
-    sp, db = spotify_client(), store.connect()
+@app.route("/transfer/<slug>/<playlist_id>/scan", methods=["POST"])
+def transfer_scan(slug, playlist_id):
+    d, db = direction(slug), store.connect()
+    save_ticks(d, db)
+    loaded = d.load(playlist_id)
+    if loaded is None:
+        return redirect(f"/transfer/{slug}/{playlist_id}")
+    todo = [i for i in loaded[1] if store.get_match(db, d.key(i), d.table) is None][:BATCH_SIZE]
+    for item in todo:
+        try:
+            store.save_match(db, d.find(item), d.table)
+        except (SpotifyException, HttpError) as e:
+            msg = blocked_message(e)
+            if not msg:
+                raise
+            flash(msg)
+            break
+    return redirect(f"/transfer/{slug}/{playlist_id}")
 
-    video_ids = request.form.getlist("video")
-    ticked = set(request.form.getlist("confirm"))
-    store.set_approved(db, {vid: vid in ticked for vid in video_ids})
+@app.route("/transfer/<slug>/<playlist_id>/rescan", methods=["POST"])
+def transfer_rescan(slug, playlist_id):
+    d, db = direction(slug), store.connect()
+    loaded = d.load(playlist_id)
+    if loaded:
+        store.delete_matches(db, [d.key(i) for i in loaded[1]], d.table)
+    return redirect(f"/transfer/{slug}/{playlist_id}")
 
-    track_ids = []
-    for vid in video_ids:
-        match = store.get_match(db, vid)
-        if vid in ticked and match and match["spotify_id"]:
-            track_ids.append(match["spotify_id"])
-    track_ids = list(dict.fromkeys(track_ids)) 
-    if not track_ids:
-        abort(400, "Nothing ticked, confirm at least one match first.")
+@app.route("/transfer/<slug>/<playlist_id>/import", methods=["POST"])
+def transfer_import(slug, playlist_id):
+    d, db = direction(slug), store.connect()
+    ids = []
+    for key in save_ticks(d, db):
+        match = store.get_match(db, key, d.table)
+        if match and d.dest_id(match):
+            ids.append(d.dest_id(match))
+    ids = list(dict.fromkeys(ids))  # same song twice in the source playlist
+    if not ids:
+        flash("Nothing ticked, confirm at least one match first.")
+        return redirect(f"/transfer/{slug}/{playlist_id}")
 
-    name = request.form.get("name", "").strip() or "Synced from YouTube"
+    name = request.form.get("name", "").strip() or f"Synced from {d.source}"
     try:
-        new = sp.current_user_playlist_create(
-            name, public=False,
-            description=f"Imported from https://www.youtube.com/playlist?list={playlist_id}",
-        )
-        for i in range(0, len(track_ids), 100):
-            sp.playlist_add_items(new["id"], track_ids[i:i + 100])
-    except SpotifyException as e:
-        if e.http_status != 429:
+        url, added = d.create(name, playlist_id, ids)
+    except (SpotifyException, HttpError) as e:
+        msg = blocked_message(e)
+        if not msg:
             raise
-        abort(429, "Spotify rate limit hit, your ticks are saved. Try the import again later.")
+        flash(msg + " Your ticks are saved, try the import again later.")
+        return redirect(f"/transfer/{slug}/{playlist_id}")
 
     return render_template(
-        "imported.html", name=name, count=len(track_ids),
-        url=new["external_urls"]["spotify"], playlist_id=playlist_id,
+        "imported.html", d=d, name=name, url=url, added=added, total=len(ids),
+        back=f"/transfer/{slug}/{playlist_id}",
     )
 
 @app.route("/login/spotify")
