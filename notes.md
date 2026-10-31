@@ -8,3 +8,5 @@ probably want t ocheck how quotas are used
 
 gauth
 https://console.cloud.google.com
+
+spotify 100 max per request

@@ -1,6 +1,6 @@
 from auth import spotify_client, youtube_client
 
-"""verify connection & display playlists on both accounts, still need to check if sub-playlists on spotify display right"""
+"""verify connection & display playlists on both accounts, still need to check if sub-playlists on spotify display right tho"""
 sp = spotify_client()
 print("Spotify playlists:")
 page = sp.current_user_playlists(limit=50)
@@ -17,3 +17,4 @@ while request:
     for p in response["items"]:
         print(f"  {p['snippet']['title']} ({p['contentDetails']['itemCount']} videos)")
     request = yt.playlists().list_next(request, response)
+ 

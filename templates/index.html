@@ -18,9 +18,18 @@
     {% endif %}
 
     <h2>YouTube</h2>
-    {% if youtube %}
+    {% if youtube is not none %}
       <p>Connected. <a href="/logout/youtube">Log out</a></p>
-      <ul>{% for name in youtube %}<li>{{ name }}</li>{% endfor %}</ul>
+      <form action="/preview">
+        <input name="playlist" size="60" placeholder="Paste any public or unlisted YouTube playlist link" required>
+        <button>Scan</button>
+      </form>
+      <h3>Your playlists</h3>
+      <ul>
+        {% for p in youtube %}
+          <li>{{ p.title }}: <a href="/preview/{{ p.id }}">Preview Spotify matches</a></li>
+        {% endfor %}
+      </ul>
     {% else %}
       <p><a href="/login/youtube">Log in with Google</a></p>
     {% endif %}

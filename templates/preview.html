@@ -1,0 +1,83 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8"><title>Preview</title>
+  </head>
+
+  <body>
+    <p><a href="/">&larr; Back</a></p>
+    <h1>Preview: {{ playlist_title }}</h1>
+    {% if rate_limited %}
+      <p style="background:#fff3cd;padding:8px">
+        Spotify rate limit hit, {{ unscanned }} videos not scanned yet.
+        Try again in {{ rate_limited }}, everything below is saved and won't be searched again.
+      </p>
+    {% elif unscanned %}
+      <p style="background:#e7f1ff;padding:8px">
+        Scanned {{ total - unscanned }} / {{ total }}. Next batch in
+        <span id="countdown">{{ batch_delay }}</span>s...
+        <a href="#" onclick="clearInterval(timer); this.parentNode.textContent = 'Paused. Reload the page to continue.'; return false">Pause</a>
+      </p>
+      <script>
+        let left = Number(document.getElementById("countdown").textContent);
+        const timer = setInterval(() => {
+          left -= 1;
+          document.getElementById("countdown").textContent = left;
+          if (left <= 0) { clearInterval(timer); location.reload(); }
+        }, 1000);
+      </script>
+    {% endif %}
+    <p>
+      {{ counts.auto }} auto-add (8-10) &middot;
+      {{ counts.review }} need review (5-7) &middot;
+      {{ counts.skip }} skipped (0-4)
+      &middot; <a href="?rescan=1">Rescan all</a>
+    </p>
+
+    <form method="post" action="/import/{{ playlist_id }}">
+    <p>
+      New Spotify playlist name:
+      <input name="name" value="{{ playlist_title }}" size="40" required>
+      <button {% if unscanned and not rate_limited %}disabled title="Wait for the scan to finish"{% endif %}>
+        Create playlist with ticked songs (<span id="ticked">{{ matches | selectattr("checked") | list | length }}</span>)
+      </button>
+    </p>
+
+    <table border="1" cellpadding="4">
+      <tr>
+        <th>Add</th><th>Score</th><th>Status</th>
+        <th>YouTube title</th><th>Channel</th>
+        <th>Cleaned title</th><th>Detected artist</th>
+        <th>Spotify match</th>
+      </tr>
+      {% for m in matches %}
+      <tr>
+        <td>
+          <input type="hidden" name="video" value="{{ m.video_id }}">
+          <input type="checkbox" name="confirm" value="{{ m.video_id }}"
+                 {% if m.checked %}checked{% endif %} {% if not m.spotify_id %}disabled{% endif %}>
+        </td>
+        <td>{{ m.score }}</td>
+        <td>{{ {"auto": "auto-add", "review": "review", "skip": "skip"}[m.bucket] }}</td>
+        <td><a href="https://www.youtube.com/watch?v={{ m.video_id }}">{{ m.title }}</a></td>
+        <td>{{ m.channel }}</td>
+        <td>{{ m.clean_title }}</td>
+        <td>{{ m.artist }}</td>
+        <td>
+          {% if m.spotify_id %}
+            <a href="https://open.spotify.com/track/{{ m.spotify_id }}">{{ m.spotify_name }}</a>
+            by {{ m.spotify_artists }}
+          {% else %}no result{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    </form>
+    <script>
+    document.addEventListener("change", () => {
+        document.getElementById("ticked").textContent =
+          document.querySelectorAll('input[name="confirm"]:checked').length;
+      });
+    </script>
+  </body>
+</html>
