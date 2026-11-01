@@ -1,18 +1,14 @@
-"""The two transfer directions. Both expose the same methods so app.py and the
-review page don't care which way songs are going."""
 import re
+import matcher
 
 from googleapiclient.errors import HttpError
 from spotipy.exceptions import SpotifyException
-
-import matcher
 
 YT_VIDEO = "https://www.youtube.com/watch?v={}"
 SP_TRACK = "https://open.spotify.com/track/{}"
 
 
 def blocked_message(e):
-    """User facing text if e is a rate limit / quota error, otherwise None (a real bug)."""
     if isinstance(e, SpotifyException) and e.http_status == 429:
         wait = int((e.headers or {}).get("Retry-After", 0))
         when = f"{wait // 3600}h {wait % 3600 // 60}m" if wait else "a while"
@@ -50,7 +46,6 @@ class YouTubeToSpotify:
         return playlists
 
     def load(self, playlist_id):
-        """Returns (title, items) or None if the playlist can't be read."""
         meta = self.yt.playlists().list(part="snippet", id=playlist_id).execute()["items"]
         if not meta:
             return None
@@ -76,15 +71,27 @@ class YouTubeToSpotify:
     def import_cost(self, count):
         return ""
 
-    def create(self, name, source_id, ids):
-        """Returns (playlist url, how many got added)."""
+    def create_empty(self, name, source_id):
         new = self.sp.current_user_playlist_create(
             name, public=False,
             description=f"Imported from https://www.youtube.com/playlist?list={source_id}",
         )
-        for i in range(0, len(ids), 100):  # spotify takes max 100 per request
-            self.sp.playlist_add_items(new["id"], ids[i:i + 100])
-        return new["external_urls"]["spotify"], len(ids)
+        return new["id"], new["external_urls"]["spotify"]
+
+    def replace(self, dest_id, ids):
+        self.sp.playlist_replace_items(dest_id, ids[:100]) 
+        for i in range(100, len(ids), 100):
+            self.sp.playlist_add_items(dest_id, ids[i:i + 100])
+        return len(ids)
+
+    @staticmethod
+    def playlist_url(dest_id):
+        return f"https://open.spotify.com/playlist/{dest_id}"
+
+    def create(self, name, source_id, ids):
+        """Returns (playlist url, how many got added)."""
+        dest_id, url = self.create_empty(name, source_id)
+        return url, self.replace(dest_id, ids)
 
 
 class SpotifyToYouTube:
@@ -139,26 +146,47 @@ class SpotifyToYouTube:
     def import_cost(self, count):
         return f"Uses about {50 + 50 * count:,} of your 10,000 daily YouTube units (50 per song)."
 
-    def create(self, name, source_id, ids):
+    def create_empty(self, name, source_id):
         new = self.yt.playlists().insert(part="snippet,status", body={
             "snippet": {"title": name,
                         "description": f"Imported from https://open.spotify.com/playlist/{source_id}"},
             "status": {"privacyStatus": "private"},
         }).execute()
-        url = f"https://www.youtube.com/playlist?list={new['id']}"
-        added = 0
-        for vid in ids:  # youtube only adds one video per request
-            try:
-                self.yt.playlistItems().insert(part="snippet", body={"snippet": {
-                    "playlistId": new["id"],
-                    "resourceId": {"kind": "youtube#video", "videoId": vid},
-                }}).execute()
-            except HttpError as e:
-                if blocked_message(e):
-                    break  # quota ran out midway, keep what got added
+        return new["id"], self.playlist_url(new["id"])
+
+    def replace(self, dest_id, ids):
+        current = {} 
+        req = self.yt.playlistItems().list(part="snippet", playlistId=dest_id, maxResults=50)
+        while req:
+            resp = req.execute()
+            for item in resp["items"]:
+                current[item["snippet"]["resourceId"]["videoId"]] = item["id"]
+            req = self.yt.playlistItems().list_next(req, resp)
+
+        wanted = set(ids)
+        try:
+            for vid, item_id in current.items():
+                if vid not in wanted:
+                    self.yt.playlistItems().delete(id=item_id).execute()
+            for vid in ids: 
+                if vid not in current:
+                    self.yt.playlistItems().insert(part="snippet", body={"snippet": {
+                        "playlistId": dest_id,
+                        "resourceId": {"kind": "youtube#video", "videoId": vid},
+                    }}).execute()
+                    current[vid] = None
+        except HttpError as e:
+            if not blocked_message(e):
                 raise
-            added += 1
-        return url, added
+        return len(wanted & current.keys())
+
+    @staticmethod
+    def playlist_url(dest_id):
+        return f"https://www.youtube.com/playlist?list={dest_id}"
+
+    def create(self, name, source_id, ids):
+        dest_id, url = self.create_empty(name, source_id)
+        return url, self.replace(dest_id, ids)
 
 
 DIRECTIONS = {d.slug: d for d in (YouTubeToSpotify, SpotifyToYouTube)}

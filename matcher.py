@@ -15,7 +15,27 @@ SPOTIFY_LINK = re.compile(r"open\.spotify\.com/(?:intl-\w+/)?track/([A-Za-z0-9]{
 """ 6 seems to be the best overall but that does sorta use up too many searches imo, try eventually figuring out a better method!!!"""
 MAX_SEARCHES = 6
 AUTO_ADD = 8
-REVIEW = 5     
+REVIEW = 5
+
+def tag_word(word, after=""):
+    return re.compile(
+        rf"[\(\[【][^\)\]】]*\b{word}\b"                              
+        rf"|[\-–—]\s*{word}\b\s*(?:{after}ver|version|$)", 
+        re.I,
+    )
+
+VERSION_TAGS = {
+    "instrumental": re.compile(r"instrumental|\binst\b\.?|off ?vocal|オフボーカル|karaoke|カラオケ|backing track", re.I),
+    "acapella": re.compile(r"a ?cappella|acapella|vocals? only", re.I),
+    "remix": re.compile(r"remix|\bbootleg\b|\bflip\b", re.I),
+    "sped up": re.compile(r"sped ?up|speed ?up|nightcore", re.I),
+    "slowed": re.compile(r"slowed", re.I),
+    "8-bit": re.compile(r"8[ -]?bit", re.I),
+    "live": tag_word("live", after=r"at\b|from\b|in\b|on\b|session|"),
+    "cover": tag_word("cover", after=r"by\b|"),
+    "acoustic": tag_word("acoustic", after=r"session|"),
+}
+VERSION_MISMATCH = 5  # 10 - 5 = review at best, never auto-added
 
 def youtube_playlist_videos(yt, playlist_id):
     videos = []
@@ -30,6 +50,7 @@ def youtube_playlist_videos(yt, playlist_id):
                 "video_id": s["resourceId"]["videoId"],
                 "title": s["title"],
                 "channel": s["videoOwnerChannelTitle"],
+                "added_at": s["publishedAt"],  # when it was added to the playlist, not the upload date
             })
         req = yt.playlistItems().list_next(req, resp)
 
@@ -121,9 +142,15 @@ def title_points(name, sp_title):
         return 2
     return 0
 
+def versions(title):
+    return {tag for tag, pattern in VERSION_TAGS.items() if pattern.search(title)}
+
 def score(video, names, artists, is_topic, track, artist_hit=False):
     sp_title = normalize(track["name"])
     points = max((title_points(n, sp_title) for n in names), default=0)
+
+    if versions(video["title"]) != versions(track["name"]):
+        points -= VERSION_MISMATCH
 
     sp_artists = [normalize(a["name"]) for a in track["artists"]]
     yt_artists = [normalize(a) for a in artists]
@@ -207,6 +234,7 @@ def spotify_playlist_tracks(sp, playlist_id):
                 "artists": [a["name"] for a in t["artists"]],
                 "track_artists": ", ".join(a["name"] for a in t["artists"]),
                 "duration_s": t["duration_ms"] // 1000,
+                "added_at": entry.get("added_at") or "",
             })
         page = sp.next(page) if page["next"] else None
     return tracks

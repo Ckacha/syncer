@@ -1,11 +1,13 @@
 import os
 import secrets
+import subprocess
 
 from flask import Flask, abort, flash, redirect, render_template, request, session
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.errors import HttpError
 from spotipy.exceptions import SpotifyException
 
+import automations
 import matcher
 import store
 from transfer import DIRECTIONS, blocked_message
@@ -23,6 +25,7 @@ from auth import (
 os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
 
 GOOGLE_REDIRECT_URI = "http://127.0.0.1:8888/google/callback"
+TASK_NAME = "Syncer automations"  # windows task scheduler entry that runs sync.py
 BATCH_SIZE = 10  # songs searched per click of "Scan next"
 
 app = Flask(__name__)
@@ -155,6 +158,51 @@ def transfer_import(slug, playlist_id):
         "imported.html", d=d, name=name, url=url, added=added, total=len(ids),
         back=f"/transfer/{slug}/{playlist_id}",
     )
+
+def scheduled():
+    """Is the windows task that runs sync.py set up?"""
+    result = subprocess.run(["schtasks", "/Query", "/TN", TASK_NAME], capture_output=True)
+    return result.returncode == 0
+
+@app.route("/automations")
+def automations_page():
+    db = store.connect()
+    autos = store.automations(db)
+    for a in autos:
+        d = DIRECTIONS[a["direction"]]
+        a["arrow"] = f"{d.source} → {d.dest}"
+        a["dest_url"] = d.playlist_url(a["dest_id"]) if a["dest_id"] else None
+    return render_template("automations.html", autos=autos, directions=DIRECTIONS.values(),
+                           scheduled=scheduled(), task_name=TASK_NAME)
+
+@app.route("/automations", methods=["POST"])
+def automations_add():
+    d, db = direction(request.form["direction"]), store.connect()
+    source_id = d.playlist_id_from(request.form.get("source", ""))
+    loaded = d.load(source_id) if source_id else None
+    if loaded is None:
+        flash(f"Couldn't open that {d.source} playlist. Check the link, and that it isn't private.")
+        return redirect("/automations")
+    count = max(1, min(int(request.form.get("count") or 30), 100))
+    dest_name = request.form.get("dest_name", "").strip() or f"{loaded[0]} (newest {count})"
+    store.add_automation(db, d.slug, source_id, loaded[0], dest_name, count)
+    flash(f'Added. Click "Run now" to create "{dest_name}" and fill it.')
+    return redirect("/automations")
+
+@app.route("/automations/<int:auto_id>/run", methods=["POST"])
+def automations_run(auto_id):
+    db = store.connect()
+    auto = store.get_automation(db, auto_id)
+    if auto:
+        direction(auto["direction"])  # login check
+        flash(f"{auto['dest_name']}: {automations.run(auto, youtube_client(), spotify_client(), db)}")
+    return redirect("/automations")
+
+@app.route("/automations/<int:auto_id>/delete", methods=["POST"])
+def automations_delete(auto_id):
+    store.delete_automation(store.connect(), auto_id)
+    flash("Automation deleted. The playlist it made is still there.")
+    return redirect("/automations")
 
 @app.route("/login/spotify")
 def login_spotify():

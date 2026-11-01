@@ -39,7 +39,42 @@ def connect():
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS automations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            direction TEXT, source_id TEXT, source_title TEXT,
+            dest_id TEXT,      -- NULL until the first run creates it
+            dest_name TEXT,
+            count INTEGER,     -- keep the newest this many songs
+            last_run TEXT, last_result TEXT
+        )
+    """)
     return db
+
+def automations(db):
+    return [dict(r) for r in db.execute("SELECT * FROM automations ORDER BY id")]
+
+def get_automation(db, auto_id):
+    row = db.execute("SELECT * FROM automations WHERE id = ?", (auto_id,)).fetchone()
+    return dict(row) if row else None
+
+def add_automation(db, direction, source_id, source_title, dest_name, count):
+    db.execute(
+        "INSERT INTO automations (direction, source_id, source_title, dest_name, count) VALUES (?, ?, ?, ?, ?)",
+        (direction, source_id, source_title, dest_name, count),
+    )
+    db.commit()
+
+def update_automation(db, auto_id, **fields):
+    db.execute(
+        f"UPDATE automations SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
+        [*fields.values(), auto_id],
+    )
+    db.commit()
+
+def delete_automation(db, auto_id):
+    db.execute("DELETE FROM automations WHERE id = ?", (auto_id,))
+    db.commit()
 
 def get_match(db, key, table="matches"):
     pk, _ = TABLES[table]
