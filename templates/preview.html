@@ -69,8 +69,7 @@
     </form>
 
     <script>
-      // keep the count (and youtube quota estimate) on the button in sync with the checkboxes
-      document.addEventListener("change", () => {
+        document.addEventListener("change", () => {
         const n = document.querySelectorAll('input[name="confirm"]:checked').length;
         document.getElementById("ticked").textContent = n;
         const cost = document.getElementById("cost");

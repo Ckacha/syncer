@@ -2,8 +2,6 @@ import sqlite3
 
 DB_FILE = "matches.db"
 
-# table -> (primary key, columns we write). "matches" is youtube -> spotify,
-# "reverse_matches" is spotify -> youtube
 TABLES = {
     "matches": ("video_id", (
         "video_id", "title", "channel", "duration_s", "clean_title", "artist",
@@ -45,10 +43,17 @@ def connect():
             direction TEXT, source_id TEXT, source_title TEXT,
             dest_id TEXT,      -- NULL until the first run creates it
             dest_name TEXT,
-            count INTEGER,     -- keep the newest this many songs
+            count INTEGER,     -- keep at most this many songs, NULL = no limit
+            days INTEGER,      -- only songs added in the last this many days, NULL = any time
+            pick TEXT DEFAULT 'newest',  -- which end to keep when trimming: newest / oldest
             last_run TEXT, last_result TEXT
         )
     """)
+    have = {r["name"] for r in db.execute("PRAGMA table_info(automations)")}
+    if "days" not in have:
+        db.execute("ALTER TABLE automations ADD COLUMN days INTEGER")
+    if "pick" not in have:
+        db.execute("ALTER TABLE automations ADD COLUMN pick TEXT DEFAULT 'newest'")
     return db
 
 def automations(db):
@@ -58,10 +63,11 @@ def get_automation(db, auto_id):
     row = db.execute("SELECT * FROM automations WHERE id = ?", (auto_id,)).fetchone()
     return dict(row) if row else None
 
-def add_automation(db, direction, source_id, source_title, dest_name, count):
+def add_automation(db, direction, source_id, source_title, dest_name, count, days=None, pick="newest"):
     db.execute(
-        "INSERT INTO automations (direction, source_id, source_title, dest_name, count) VALUES (?, ?, ?, ?, ?)",
-        (direction, source_id, source_title, dest_name, count),
+        "INSERT INTO automations (direction, source_id, source_title, dest_name, count, days, pick) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (direction, source_id, source_title, dest_name, count, days, pick),
     )
     db.commit()
 

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from googleapiclient.errors import HttpError
 from spotipy.exceptions import SpotifyException
 from transfer import DIRECTIONS, blocked_message
@@ -16,6 +16,24 @@ def accepted(match):
 def is_missing(e):
     return (isinstance(e, SpotifyException) and e.http_status == 404) or \
            (isinstance(e, HttpError) and e.resp.status == 404)
+
+PICKS = ("newest", "oldest")
+MAX_SONGS = 500
+
+def describe(auto):
+    what = f"{auto['pick'] or 'newest'} {auto['count']} songs" if auto["count"] else "every song"
+    when = f" added in the last {auto['days']} days" if auto["days"] else ""
+    return what + when
+
+def pick_items(items, auto, now=None):
+    """Apply the automation's rules to the source playlist's items."""
+    if auto["days"]:
+        now = now or datetime.now(timezone.utc)
+        cutoff = (now - timedelta(days=auto["days"])).strftime("%Y-%m-%dT%H:%M:%S")
+        items = [i for i in items if (i["added_at"] or "")[:19] >= cutoff]
+    newest_first = (auto["pick"] or "newest") == "newest"
+    items = sorted(items, key=lambda i: i["added_at"] or "", reverse=newest_first)
+    return items[:auto["count"]] if auto["count"] else items
 
 def run(auto, yt, sp, db):
     d = DIRECTIONS[auto["direction"]](yt, sp)
@@ -37,10 +55,10 @@ def sync(d, auto, db):
     if loaded is None:
         return f"Couldn't open the {d.source} playlist! (It might be private/deleted)"
     _, items = loaded
-    newest = sorted(items, key=lambda i: i["added_at"], reverse=True)[:auto["count"]]
+    picked = pick_items(items, auto)
     ids, needs_review = [], 0
 
-    for item in newest:
+    for item in picked:
         match = store.get_match(db, d.key(item), d.table)
         if match is None:
             match = d.find(item)

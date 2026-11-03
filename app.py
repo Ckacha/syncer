@@ -1,8 +1,11 @@
+import hmac
 import os
 import secrets
 import subprocess
+import sys
 
 from flask import Flask, abort, flash, redirect, render_template, request, session
+from werkzeug.middleware.proxy_fix import ProxyFix
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.errors import HttpError
 from spotipy.exceptions import SpotifyException
@@ -24,12 +27,31 @@ from auth import (
 
 os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
 
-GOOGLE_REDIRECT_URI = "http://127.0.0.1:8888/google/callback"
-TASK_NAME = "Syncer automations"  # windows task scheduler entry that runs sync.py
-BATCH_SIZE = 10  # songs searched per click of "Scan next"
+GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "http://127.0.0.1:8888/google/callback")
+APP_PASSWORD = os.environ.get("APP_PASSWORD")  
+TASK_NAME = "Syncer automations"  
+BATCH_SIZE = 10  
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1) 
+
+OPEN_PATHS = {"/password", "/callback", "/google/callback"}
+
+@app.before_request
+def require_password():
+    if APP_PASSWORD and not session.get("unlocked") and request.path not in OPEN_PATHS:
+        return redirect("/password")
+
+@app.route("/password", methods=["GET", "POST"])
+def password():
+    if request.method == "POST":
+        if hmac.compare_digest(request.form.get("password", "").encode(), (APP_PASSWORD or "").encode()):
+            session["unlocked"] = True
+            session.permanent = True
+            return redirect("/")
+        flash("Wrong password.")
+    return render_template("password.html")
 
 def connected():
     return spotify_logged_in(), load_youtube_creds() is not None
@@ -160,9 +182,12 @@ def transfer_import(slug, playlist_id):
     )
 
 def scheduled():
-    """Is the windows task that runs sync.py set up?"""
-    result = subprocess.run(["schtasks", "/Query", "/TN", TASK_NAME], capture_output=True)
-    return result.returncode == 0
+    """Is something set up to run sync.py on a timer? (Task Scheduler on Windows, cron elsewhere)"""
+    if sys.platform == "win32":
+        result = subprocess.run(["schtasks", "/Query", "/TN", TASK_NAME], capture_output=True)
+        return result.returncode == 0
+    result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    return "sync.py" in result.stdout
 
 @app.route("/automations")
 def automations_page():
@@ -172,8 +197,18 @@ def automations_page():
         d = DIRECTIONS[a["direction"]]
         a["arrow"] = f"{d.source} → {d.dest}"
         a["dest_url"] = d.playlist_url(a["dest_id"]) if a["dest_id"] else None
+        a["rules"] = automations.describe(a)
     return render_template("automations.html", autos=autos, directions=DIRECTIONS.values(),
-                           scheduled=scheduled(), task_name=TASK_NAME)
+                           scheduled=scheduled(), task_name=TASK_NAME, windows=sys.platform == "win32", picks=automations.PICKS,
+                           max_songs=automations.MAX_SONGS)
+
+def read_rules(form):
+    """The rule fields shared by the add and edit forms. Blank count/days = no limit."""
+    def number(name, top):
+        raw = (form.get(name) or "").strip()
+        return max(1, min(int(raw), top)) if raw.isdigit() else None
+    pick = form.get("pick") if form.get("pick") in automations.PICKS else "newest"
+    return number("count", automations.MAX_SONGS), number("days", 3650), pick
 
 @app.route("/automations", methods=["POST"])
 def automations_add():
@@ -183,11 +218,30 @@ def automations_add():
     if loaded is None:
         flash(f"Couldn't open that {d.source} playlist. Check the link, and that it isn't private.")
         return redirect("/automations")
-    count = max(1, min(int(request.form.get("count") or 30), 100))
-    dest_name = request.form.get("dest_name", "").strip() or f"{loaded[0]} (newest {count})"
-    store.add_automation(db, d.slug, source_id, loaded[0], dest_name, count)
+    count, days, pick = read_rules(request.form)
+    rules = automations.describe({"count": count, "days": days, "pick": pick})
+    dest_name = request.form.get("dest_name", "").strip() or f"{loaded[0]} ({rules})"
+    store.add_automation(db, d.slug, source_id, loaded[0], dest_name, count, days, pick)
     flash(f'Added. Click "Run now" to create "{dest_name}" and fill it.')
     return redirect("/automations")
+
+@app.route("/automations/<int:auto_id>/edit", methods=["GET", "POST"])
+def automations_edit(auto_id):
+    db = store.connect()
+    auto = store.get_automation(db, auto_id)
+    if not auto:
+        return redirect("/automations")
+    if request.method == "POST":
+        count, days, pick = read_rules(request.form)
+        dest_name = request.form.get("dest_name", "").strip() or auto["dest_name"]
+        store.update_automation(db, auto_id, count=count, days=days, pick=pick, dest_name=dest_name)
+        msg = "Saved. The playlist changes on the next run."
+        if dest_name != auto["dest_name"] and auto["dest_id"]:
+            msg += " The new name only applies if the playlist gets recreated, rename the existing one in the app."
+        flash(msg)
+        return redirect("/automations")
+    return render_template("automation_edit.html", a=auto, picks=automations.PICKS,
+                           max_songs=automations.MAX_SONGS)
 
 @app.route("/automations/<int:auto_id>/run", methods=["POST"])
 def automations_run(auto_id):

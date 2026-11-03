@@ -1,0 +1,22 @@
+<!doctype html>
+{% from "_rules.html" import rule_fields %}
+<html>
+  <head>
+    <meta charset="utf-8"><title>Edit automation</title>
+  </head>
+
+  <body>
+    <p><a href="/automations">&larr; Back</a></p>
+    <h1>Edit automation</h1>
+    
+    <p>From <b>{{ a.source_title }}</b></p>
+    
+    <form method="post">
+      {{ rule_fields(a, picks, max_songs) }}
+      <p>Playlist name: <input name="dest_name" size="40" value="{{ a.dest_name }}"></p>
+      <p>
+        <button>Save</button>
+      </p>
+    </form>
+  </body>
+</html>
