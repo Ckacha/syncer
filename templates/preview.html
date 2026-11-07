@@ -41,7 +41,7 @@
             <th>{{ d.source }}</th><th>{{ d.dest }}</th>
           </tr>
           {% for r in rows %}
-          <tr class="{{ r.bucket if r.scanned else 'pending' }}">
+          <tr id="row-{{ r.key }}" class="{{ r.bucket if r.scanned else 'pending' }}">
             <td>
               {% if r.scanned %}
                 <input type="hidden" name="key" value="{{ r.key }}">
@@ -49,24 +49,31 @@
                        {% if r.checked %}checked{% endif %} {% if not r.dst_id %}disabled{% endif %}>
               {% endif %}
             </td>
-            <td class="score">{{ r.score if r.scanned }}</td>
+            <td class="score">
+              {% if r.scanned %}
+                {{ r.score }}
+                <button class="rescan" formaction="/transfer/{{ d.slug }}/{{ playlist_id }}/rescan/{{ r.key }}"
+                        title="Rescan this song{% if d.dest == 'YouTube' %} (up to 101 YouTube quota){% endif %}"
+                        aria-label="Rescan {{ r.src_title }}">&#8635;</button>
+              {% endif %}
+            </td>
             <td>
               {% if r.scanned %}
                 {% set label, cls = {"auto": ("auto-add", "ok"), "review": ("review", "warn"), "skip": ("skip", "bad")}[r.bucket] %}
-                <span class="pill {{ cls }}">{{ label }}</span>
+                <span class="pill {{ cls }}">{{ r.version or label }}</span>
               {% endif %}
             </td>
             <td>
               <div class="song">
                 <span class="cover">{% if r.src_img %}<img src="{{ r.src_img }}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">{% endif %}</span>
-                <div><a href="{{ r.src_url }}">{{ r.src_title }}</a><small>{{ r.src_sub }}</small></div>
+                <div><a href="{{ r.src_url }}" target="_blank" rel="noopener noreferrer">{{ r.src_title }}</a><small>{{ r.src_sub }}</small></div>
               </div>
             </td>
             <td>
               {% if r.dst_id %}
               <div class="song">
                 <span class="cover">{% if r.dst_img %}<img src="{{ r.dst_img }}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">{% endif %}</span>
-                <div><a href="{{ r.dst_url }}">{{ r.dst_title }}</a><small>{{ r.dst_sub }}</small></div>
+                <div><a href="{{ r.dst_url }}" target="_blank" rel="noopener noreferrer">{{ r.dst_title }}</a><small>{{ r.dst_sub }}</small></div>
               </div>
               {% elif r.scanned %}<span class="fine">no result</span>{% endif %}
             </td>

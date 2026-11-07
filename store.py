@@ -60,6 +60,9 @@ def connect():
         db.execute("ALTER TABLE automations ADD COLUMN owner TEXT")
     if "paused" not in have:
         db.execute("ALTER TABLE automations ADD COLUMN paused INTEGER DEFAULT 0")
+    if "source_count" not in have:
+        db.execute("ALTER TABLE automations ADD COLUMN source_count INTEGER")
+        db.execute("ALTER TABLE automations ADD COLUMN source_checked REAL")
     db.execute("""
         CREATE TABLE IF NOT EXISTS accounts (
             provider TEXT NOT NULL,     -- 'spotify' or 'google'

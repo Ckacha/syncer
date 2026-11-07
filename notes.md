@@ -11,12 +11,6 @@ gauth
 Need to do:
 privacy policy
     should be at /privacy
-imported.html
-    GET AROUND RATE LIMITS (yt's specifically)
-        could request for more but not sure about when that would even get approved
-    i swear theyre pmo
-better clean/strip links 
-    check how to scan/search both english and the base language it is (japanaese, korean, etc)
 more automations 
     maybe more like slackomations or smth   
     physical wiring + clicks and stuff?
@@ -28,6 +22,8 @@ Other apps if possible to use
     tidal
     deezer
 verify the google thing maybe
+better documentation since other people need/are going to have to set this thing up themself since rate limits arent going to let me do what i want
+spotify stuff for the playlists
 
 scoring so i dont forget
 - title matches: +4 (+2 if its off by like 1/2 characters)
@@ -36,3 +32,5 @@ scoring so i dont forget
 - if its the right topic channel: +1
 - one is instrumental/remix/live/cover and the other isnt: -5
 - 8+ gets added automatically, 5-7 user checks, under 5 skipped(let users see it tho)
+
+I give upon app limits if they want to use it theyll have to dm me or do a localhost themself

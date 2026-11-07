@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Quota test{% endblock %}
+{% block content %}
+  <h1>Quota test</h1>
+  <p class="fine">
+    this better be more efficent
+  </p>
+
+  <form method="post" class="card inline-form">
+    <input name="playlist" value="{{ link or '' }}" placeholder="YouTube/Spotify playlist link" required>
+    <button>Run test</button>
+  </form>
+
+  {% if result %}
+    <section class="card flush">
+      <table>
+        <tr><th>{{ kind }} playlist: {{ title }}</th><th>Old</th><th>Now</th><th>Saved</th><th></th></tr>
+        {% for what, cur, new, how, note in rows %}
+          <tr>
+            <td>{{ what }}<small>{{ note }}</small></td>
+            <td class="score">{{ cur }}</td>
+            <td class="score">{{ new }}</td>
+            <td>{% if cur %}<span class="pill {{ 'ok' if new < cur else '' }}">{{ ((cur - new) / cur * 100) | round | int }}%</span>{% endif %}</td>
+            <td class="fine">{{ how }}</td>
+          </tr>
+        {% endfor %}
+      </table>
+    </section>
+    <p class="fine">
+      This test spent {{ spent.units }} real units
+      {%- if spent.calls %} ({% for k, v in spent.calls.items() %}{{ v }}× {{ k }}{{ ", " if not loop.last }}{% endfor %}){% endif %}.
+    </p>
+  {% endif %}
+{% endblock %}

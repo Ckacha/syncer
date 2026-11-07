@@ -26,6 +26,7 @@ LINK_PAGE_HOSTS = (
 URL = re.compile(r"https?://[^\s<>\"'()]+")
 SPOTIFY_REDIRECT = re.compile(r"https?://[^\s<>\"']+/(?:to|go|redirect|r)/spotify[^\s<>\"']*", re.I)
 
+TOPIC_LINE = re.compile(r"Provided to YouTube by[^\n]*\n\s*\n([^\n]+ · [^\n]+)(?:\n\s*\n(?!℗|Released on|Composer|Lyricist|Auto-generated)([^\n]+))?")
 LINKED_BONUS = 3  
 MAX_SEARCHES = 6
 AUTO_ADD = 8
@@ -49,7 +50,43 @@ VERSION_TAGS = {
     "cover": tag_word("cover", after=r"by\b|"),
     "acoustic": tag_word("acoustic", after=r"session|"),
 }
-VERSION_MISMATCH = 5 
+VERSION_PENALTY = 10 
+
+LOOSE_VIDEO_TAGS = {
+    "cover": ("cover", re.compile(r"カバー|歌ってみた|歌いました|弾いてみた|叩いてみた|切り抜き|を歌う|合わせてみた")),
+    "acoustic": ("acoustic", re.compile(r"アコースティック")),
+}
+
+def _nfkc(text):
+    return unicodedata.normalize("NFKC", text or "")
+
+def _as_tag(word):
+    """word used as a tag, not as part of a song name: "(cover)", "【COVER】", "/ cover", "… cover", "acoustic ver." """
+    return re.compile(rf"[\(\[【]\s*[^\)\]】]*\b{word}|\b{word}\w*\s*[\)\]】]|[/／]\s*\S*\s*{word}\b"
+                      rf"|\b{word}\w*\s*(?:ver|version)\b|\b{word}\w*\s*$", re.I)
+
+def track_versions(name):
+    name = _nfkc(name)
+    tags = versions(name)
+    if re.search(r"カバー|covered by", name, re.I):
+        tags.add("cover")
+    return tags
+
+def video_versions(title, track_name=""):
+    title = _nfkc(title)
+    tags = versions(title)
+    for tag, (word, other) in LOOSE_VIDEO_TAGS.items():
+        if tag in tags:
+            continue
+        if other.search(title):
+            tags.add(tag)
+        elif re.search(rf"\b{word}(?:ed)?\b", title, re.I):
+            if not re.search(rf"\b{word}", track_name or "", re.I) or _as_tag(word).search(title):
+                tags.add(tag)
+    return tags
+
+def version_mismatch(video_title, track_name):
+    return video_versions(video_title, track_name) ^ track_versions(track_name)
 
 def youtube_playlist_videos(yt, playlist_id):
     videos = []
@@ -107,21 +144,31 @@ def strip_noise(title):
 def parse_video(title, channel):
     is_topic = channel.endswith(" - Topic")
     cleaned = strip_noise(unicodedata.normalize("NFKC", title))
-    artists, extra = [], []
+    artists, extra, other_order = [], [], []
 
     if is_topic:
         artists.append(channel[: -len(" - Topic")])
     else:
+        channel_artist = CHANNEL_NUMBER.sub("", CHANNEL_NOISE.sub("", channel)).strip()
         parts = DASHES.split(cleaned, maxsplit=1)
         if len(parts) == 2:
-            artists.append(parts[0])
-            cleaned = parts[1]
+            left, right = (p.strip() for p in parts)
+            if JP_TITLE.search(left) and not JP_TITLE.search(right) or (
+                    is_channel(right, channel_artist) and not is_channel(left, channel_artist)):
+                artists.append(right)  
+                cleaned = left
+            elif is_channel(left, channel_artist):
+                artists.append(left)   
+                cleaned = right
+            else:
+                artists += [left, right]
+                cleaned = right
+                other_order = [left]
         else:
             parts = SLASH.split(cleaned, maxsplit=1)
             if len(parts) == 2:
                 cleaned = parts[0]
                 extra = [a.strip() for a in parts[1].split(",")]
-        channel_artist = CHANNEL_NUMBER.sub("", CHANNEL_NOISE.sub("", channel)).strip()
         artists += [channel_artist] + extra
 
     names = [cleaned]
@@ -135,8 +182,16 @@ def parse_video(title, channel):
     if not main.isascii():
         names += [main] + [p.strip() for p in re.findall(r"\(([^)]*)\)", cleaned)]
 
+    names += other_order
     artists = list(dict.fromkeys(a for a in artists if a))
     return list(dict.fromkeys(n for n in names if n)), artists, is_topic
+
+def is_channel(part, channel_artist):
+    a, b = normalize(part), normalize(channel_artist)
+    if not a or not b:
+        return False
+    return a == b or b in a or a in b or artists_overlap([part], [channel_artist]) or any(
+        w in a.split() for w in b.split() if len(w) >= 2 and not w.isascii())
 
 def fold_accent(c):
     base = unicodedata.normalize("NFKD", c)[0]
@@ -154,36 +209,109 @@ def similar(a, b):
         return 0
     return SequenceMatcher(None, a, b).ratio()
 
+_KANA = dict(zip(
+    "あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわゐゑをん"
+    "がぎぐげござじずぜぞだぢづでどばびぶべぼぱぴぷぺぽぁぃぅぇぉゃゅょゎゔ",
+    "a i u e o ka ki ku ke ko sa shi su se so ta chi tsu te to na ni nu ne no ha hi fu he ho "
+    "ma mi mu me mo ya yu yo ra ri ru re ro wa i e o n ga gi gu ge go za ji zu ze zo da ji zu de do "
+    "ba bi bu be bo pa pi pu pe po a i u e o ya yu yo wa vu".split()))
+_SMALL_Y = set("ゃゅょ")
+_SMALL_V = set("ぁぃぅぇぉ")
+
+def romaji(text):
+    out, double = [], False
+    for ch in text:
+        if "ァ" <= ch <= "ヶ":
+            ch = chr(ord(ch) - 0x60)  # i did not think id be going this for romanization faushfdoiasfjoasfasf
+        if ch == "っ":
+            double = True
+            continue
+        if ch == "ー":
+            continue
+        r = _KANA.get(ch)
+        if r is None:
+            out.append(ch)
+            double = False
+            continue
+        if out and ch in _SMALL_Y and out[-1].endswith("i") and len(out[-1]) > 1:
+            stem = out[-1][:-1]  
+            out[-1] = stem + (r[-1] if stem in ("sh", "ch", "j") else r)
+            continue
+        if out and ch in _SMALL_V and out[-1][-1:] in "aiueo" and len(out[-1]) > 0:
+            prev = out[-1]  
+            out[-1] = ("w" + r) if prev == "u" else prev[:-1] + r
+            continue
+        if double and r[0] not in "aiueon":
+            r = ("t" + r) if r.startswith("ch") else r[0] + r
+        double = False
+        out.append(r)
+    return "".join(out)
+
+def skeleton(text):
+    t = re.sub(r"[^a-z]", "", romaji(text).lower())
+    for a, b in (("ph", "f"), ("th", "s"), ("ck", "k"), ("c", "k"), ("q", "k"), ("x", "ks"),
+                 ("l", "r"), ("v", "b"), ("tsu", "ts")):
+        t = t.replace(a, b)
+    t = re.sub(r"[aeiouy]", "", t)
+    return re.sub(r"(.)\1+", r"\1", t)
+
 def title_points(name, sp_title):
     yt_title = normalize(name)
-    if yt_title and yt_title == sp_title:
+    if not yt_title or not sp_title:
+        return 0
+    pairs = {(yt_title, sp_title), (normalize(romaji(yt_title)), normalize(romaji(sp_title)))}
+    if any(a and a == b for a, b in pairs):
         return 4
-    if similar(yt_title, sp_title) >= 0.8 or (sp_title and sp_title in yt_title):
+    if any(similar(a, b) >= 0.8 or (b and b in a) for a, b in pairs):
         return 2
+    if yt_title.isascii() != sp_title.isascii():
+        a, b = skeleton(yt_title), skeleton(sp_title)
+        if len(a) >= 4 and a == b:
+            return 2
+        if similar(loose(yt_title), loose(sp_title)) >= 0.8:
+            return 2
     return 0
 
+def loose(text):
+    t = re.sub(r"[^a-z]", "", romaji(text).lower()).replace("l", "r").replace("v", "b")
+    t = re.sub(r"(?<=[^aeiou])u", "", t) 
+    return re.sub(r"(.)\1+", r"\1", t)
+
+JP_LIVE = re.compile(r"[\(\[【][^\)\]】]*(?:実演|ライブ)[^\)\]】]*[\)\]】]") 
+
 def versions(title):
-    return {tag for tag, pattern in VERSION_TAGS.items() if pattern.search(title)}
+    tags = {tag for tag, pattern in VERSION_TAGS.items() if pattern.search(title)}
+    if JP_LIVE.search(_nfkc(title)):
+        tags.add("live")
+    return tags
 
 def spotify_titles(name):
-    """The title, plus without an English translation tacked on: "ギルティ - Guilty" -> "ギルティ"."""
     titles = [normalize(name)]
     parts = DASHES.split(name, maxsplit=1)
     if len(parts) == 2 and not parts[0].isascii() and parts[1].isascii():
         titles.append(normalize(parts[0]))
     return titles
 
+def title_score(names, track):
+    return max((title_points(n, t) for n in names for t in spotify_titles(track["name"])), default=0)
+
+def linked_title_ok(names, track):
+    if title_score(names, track) > 0:
+        return True
+    return all(n.isascii() != track["name"].isascii() for n in names)
+
 def score(video, names, artists, is_topic, track, artist_hit=False):
-    points = max((title_points(n, t) for n in names for t in spotify_titles(track["name"])), default=0)
+    title = title_score(names, track)
+    points = title
 
-    if versions(video["title"]) != versions(track["name"]):
-        points -= VERSION_MISMATCH
+    if version_mismatch(video["title"], track["name"]):
+        points -= VERSION_PENALTY
 
-    sp_artists = [normalize(a["name"]) for a in track["artists"]]
-    yt_artists = [normalize(a) for a in artists]
-    if artist_hit or any(similar(y.replace(" ", ""), s.replace(" ", "")) >= 0.9 for y in yt_artists for s in sp_artists):
+    artist_match = artist_hit or artists_overlap(artists, [a["name"] for a in track["artists"]])
+    if artist_match:
         points += 3
 
+    diff = None
     if video["duration_s"] is not None:
         diff = abs(video["duration_s"] - track["duration_ms"] / 1000)
         if diff <= 5:
@@ -191,10 +319,51 @@ def score(video, names, artists, is_topic, track, artist_hit=False):
         elif diff <= 15:
             points += 1
 
+    exact_length = diff is not None and diff <= 1.5
+    if exact_length and (artist_match or (is_topic and title == 4)):
+        points += 1 
+
     if is_topic:
         points += 1
+        if not artist_match and comparable(artists, [a["name"] for a in track["artists"]]):
+            points -= TOPIC_OTHER_ARTIST
 
-    return points
+    return min(points, 10)
+
+def guest_hit(video, track):
+    guests = video_guests(video["title"])
+    return bool(track and guests and artists_overlap(guests, [a["name"] for a in track["artists"]]))
+
+def better(video, s, track, best_score, best):
+    return s > best_score or (s == best_score and guest_hit(video, track) and not guest_hit(video, best))
+VIDEO_FEAT = re.compile(r"\b(?:ft|feat|featuring)\b\.?\s+([^\)\]】|]+)", re.I)
+
+def video_guests(title):
+    m = VIDEO_FEAT.search(_nfkc(title))
+    return [g for g in ARTIST_SPLIT.split(m.group(1).strip()) if g] if m else []
+
+TOPIC_OTHER_ARTIST = 4
+ARTIST_SPLIT = re.compile(r"\s*(?:,|、|&|＆|×|\bx\b|\band\b|\bwith\b|\bfeat\.?|\bft\.?|\bvs\.?)\s*", re.I)
+
+def comparable(yt_artists, sp_artists):
+    def scripts(names):
+        latin = any(romaji(normalize(n)).replace(" ", "").isascii() for n in names if normalize(n))
+        other = any(not romaji(normalize(n)).replace(" ", "").isascii() for n in names if normalize(n))
+        return latin, other
+    (yl, yo), (sl, so) = scripts(yt_artists), scripts(sp_artists)
+    return (yl and sl) or (yo and so)
+
+def artists_overlap(yt_artists, sp_artists):
+    def parts(names):
+        out = set()
+        for n in names:
+            for piece in [n] + ARTIST_SPLIT.split(n):
+                for form in (normalize(piece), normalize(romaji(normalize(piece)))):  # にほしか ~ nihosika
+                    if form:
+                        out.add(form.replace(" ", ""))
+        return out
+    ys, ss = parts(yt_artists), parts(sp_artists)
+    return any(y == s or similar(y, s) >= 0.9 for y in ys for s in ss)
 
 def find_match(sp, video):
     names, artists, is_topic = [], [], False
@@ -202,33 +371,53 @@ def find_match(sp, video):
         n, a, is_topic = parse_video(title, video["channel"])
         names += n
         artists += a
+    if is_topic: 
+        title_line = TOPIC_LINE.search(video.get("description") or "")
+        if title_line:
+            parts = [p.strip() for p in title_line.group(1).split(" · ")]
+            names.append(parts[0])
+            artists += parts[1:]
+            release = (title_line.group(2) or "").strip()
+            if release.isascii() and not parts[0].isascii(): 
+                names.append(release)
     names, artists = list(dict.fromkeys(names)), list(dict.fromkeys(artists))
 
     best, best_score = None, 0
+    seen = []  
 
-    linked = linked_tracks(sp, video.get("description") or "")
+    linked = [t for t in linked_tracks(sp, video.get("description") or "") if linked_title_ok(names, t)]
     for track in linked:
         s = score(video, names, artists, is_topic, track) + LINKED_BONUS
-        if len(linked) == 1 and versions(video["title"]) == versions(track["name"]):
-            s = max(s, AUTO_ADD)  # one linked song, same version: trust it
+        if len(linked) == 1 and not version_mismatch(video["title"], track["name"]):
+            s = max(s, AUTO_ADD)  
         if s > best_score:
             best, best_score = track, min(s, 10)
 
-    queries = [(f'track:"{n}" artist:"{a}"', True) for a in artists[:2] for n in names[:3]]
-    queries += [(n, False) for n in names[:2]]
-    queries = queries[:MAX_SEARCHES]
-    #covers have been dealt with I think
+    queries = [(f'track:"{n}" artist:"{a}"', True) for a in artists[:2] for n in names[:3] if n != a]
+    romanized = [(f"{names[0]} {romaji(a)}", False) for a in artists[:2]
+                 if names and not a.isascii() and romaji(a) != a]
+    plain = [(n, False) for n in names[:2]]
+    queries = queries[:2] + romanized + plain + queries[2:]
+    queries = list(dict.fromkeys(queries))[:MAX_SEARCHES]
 
     for q, artist_hit in queries:
         if best_score >= AUTO_ADD:
             break
         results = sp.search(q=q, type="track", limit=5)["tracks"]["items"]
+        seen += [t for t in results if t]
         for track in results:
             if not track:
                 continue
             s = score(video, names, artists, is_topic, track, artist_hit)
-            if s > best_score:
+            if better(video, s, track, best_score, best):
                 best, best_score = track, s
+
+    if best_score < AUTO_ADD and not video["title"].isascii():
+        found = translated_release(sp, video, names, artists, seen)
+        if found:
+            best, best_score = found, max(score(video, names, artists, is_topic, found), AUTO_ADD)
+
+    best = prefer_single(sp, best, seen)
 
     return {
         **video,
@@ -240,6 +429,54 @@ def find_match(sp, video):
         "spotify_image": cover(best) if best else None,
         "score": best_score,
     }
+
+def translated_release(sp, video, names, artists, seen):
+    def base(name):
+        return normalize(re.sub(r"\s*\([^)]*\)\s*$", "", _nfkc(name)))
+    wanted = {normalize(n) for n in names}
+    anchor = next((t for t in seen if base(t["name"]) in wanted
+                   and artists_overlap(artists, [a["name"] for a in t["artists"]])), None)
+    if not anchor:
+        return None
+    length = anchor["duration_ms"] / 1000
+    if video["duration_s"] is not None and abs(video["duration_s"] - length) > 3:
+        return None
+    anchor_ids = {a["id"] for a in anchor["artists"]}
+    for artist in anchor["artists"][:3]:
+        try:
+            results = sp.search(q=f'artist:"{artist["name"]}"', type="track", limit=10)["tracks"]["items"]
+        except Exception:
+            continue
+        candidates = sorted(
+            (abs(t["duration_ms"] / 1000 - length), t) for t in results
+            if t and t["id"] != anchor["id"] and {a["id"] for a in t["artists"]} <= anchor_ids
+            and not version_mismatch(video["title"], t["name"]))
+        if candidates and candidates[0][0] <= 1 and (len(candidates) == 1 or candidates[1][0] - candidates[0][0] >= 1.5):
+            return candidates[0][1]
+    return None
+
+def album_type(track):
+    return ((track or {}).get("album") or {}).get("album_type")
+
+def prefer_single(sp, best, seen):
+    if not best or album_type(best) in (None, "single"):
+        return best
+    artist_ids = {a["id"] for a in best["artists"]}
+
+    def same_single(t):
+        return (t and t.get("id") != best["id"] and album_type(t) == "single"
+                and normalize(t["name"]) == normalize(best["name"])
+                and {a["id"] for a in t["artists"]} == artist_ids
+                and abs(t["duration_ms"] - best["duration_ms"]) <= 5000)
+
+    single = next((t for t in seen if same_single(t)), None)
+    if single is None:
+        try:
+            q = f'track:"{best["name"]}" artist:"{best["artists"][0]["name"]}"'
+            single = next((t for t in sp.search(q=q, type="track", limit=10)["tracks"]["items"] if same_single(t)), None)
+        except Exception: 
+            single = None
+    return single or best
 
 def cover(track):
     images = (track.get("album") or {}).get("images") or []
@@ -275,13 +512,11 @@ def fetch_link_page(url, hops=3):
     _page_cache[url] = result
     return result
 
-def linked_spotify_ids(description, max_pages=2):
+def linked_spotify_ids(description, max_pages=3):
     found = [(kind, sid) for kind, sid in SPOTIFY_LINK.findall(description)]
     pages = [u for u in URL.findall(description)
              if any((urlparse(u).hostname or "").lower().endswith(h) for h in LINK_PAGE_HOSTS)]
-    for page in pages[:max_pages]:
-        if found:
-            break
+    for page in list(dict.fromkeys(pages))[:max_pages]:  # all of them: a description can link several songs
         final, html = fetch_link_page(page)
         found += SPOTIFY_LINK.findall(final or "") + SPOTIFY_LINK.findall(html)
         if not found: 
@@ -301,6 +536,14 @@ def linked_tracks(sp, description):
         except Exception: 
             continue
     return tracks
+
+def match_titles(match):
+    if "track_name" in match: 
+        return match.get("video_title"), match.get("track_name")
+    return match.get("title"), match.get("spotify_name")
+
+def excluded(match):
+    return version_mismatch(*match_titles(match)) if match else set()
 
 def bucket(score):
     if score >= AUTO_ADD:
@@ -330,7 +573,6 @@ def spotify_playlist_tracks(sp, playlist_id):
     return tracks
 
 def find_video(yt, track):
-    """One youtube search per track, it costs 100 of the 10k daily quota so no retries with other queries."""
     artist = track["artists"][0] if track["artists"] else ""
     resp = yt.search().list(part="id", q=f"{artist} {track['track_name']}", type="video", maxResults=5).execute()
     ids = [item["id"]["videoId"] for item in resp["items"]]

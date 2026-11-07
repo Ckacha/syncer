@@ -458,3 +458,13 @@ main.landing {
   border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--sunken);
 }
 .cover img { display: block; width: 100%; height: 100%; object-fit: cover; }  
+
+button.rescan {
+  min-width: 0; margin-left: 6px; padding: 0 6px;
+  font-size: 0.9rem; line-height: 1.5; letter-spacing: 0;
+  background: transparent; color: var(--muted);
+  border: 1px solid var(--border); box-shadow: none;
+}
+button.rescan:hover { color: var(--text); border-color: var(--line); transform: none; box-shadow: none; }
+button.rescan:active { transform: translateY(1px); box-shadow: none; }
+td.score { white-space: nowrap; }

@@ -5,6 +5,7 @@ import secrets
 import subprocess
 import sys
 import automations
+import lean
 import matcher
 import store
 import auth
@@ -34,12 +35,10 @@ os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
 GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "http://127.0.0.1:8888/google/callback")
 APP_PASSWORD = os.environ.get("APP_PASSWORD")  
 TASK_NAME = "Syncer automations"  
-BATCH_SIZE = 10  
+BATCH_SIZE = {"yt2sp": 30, "sp2yt": 10}
 
 app = Flask(__name__)
 def load_secret_key():
-    """FLASK_SECRET_KEY from .env, or one generated once and saved in secrets/, so logins
-    survive restarts (a new random key on every restart logs everyone out)."""
     if os.environ.get("FLASK_SECRET_KEY"):
         return os.environ["FLASK_SECRET_KEY"]
     path = os.path.join(auth.SECRETS_DIR, ".flask_secret")
@@ -199,9 +198,11 @@ def transfer_review(slug, playlist_id):
         row["scanned"] = match is not None
         if match:
             row["score"] = match["score"]
-            row["bucket"] = matcher.bucket(match["score"])
+            row["version"] = ", ".join(sorted(matcher.excluded(match)))  # e.g. "cover", "acoustic"
+            row["bucket"] = "skip" if row["version"] else matcher.bucket(match["score"])
             approved = match.get("approved")
-            row["checked"] = bool(row["dst_id"]) and (
+            # other versions start unticked even if an old tick was saved (ticks get saved on every scan click)
+            row["checked"] = bool(row["dst_id"]) and not row["version"] and (
                 approved == 1 or (approved is None and row["bucket"] == "auto")
             )
         rows.append(row)
@@ -211,8 +212,80 @@ def transfer_review(slug, playlist_id):
     ticked = sum(r["checked"] for r in scanned)
     return render_template(
         "preview.html", d=d, playlist_id=playlist_id, title=title, rows=rows,
-        counts=counts, scanned=len(scanned), ticked=ticked, batch=BATCH_SIZE,
+        counts=counts, scanned=len(scanned), ticked=ticked, batch=BATCH_SIZE[d.slug],
     )
+
+@app.route("/test", methods=["GET", "POST"])
+def quota_test():
+    if request.method == "GET":
+        return render_template("test.html", result=None)
+    link = request.form.get("playlist", "").strip()
+    sp_id = DIRECTIONS["sp2yt"].playlist_id_from(link) if "spotify" in link or re.fullmatch(r"\s*[A-Za-z0-9]{22}\s*", link) else None
+    yt_id = None if sp_id else DIRECTIONS["yt2sp"].playlist_id_from(link)
+    if not (sp_id or yt_id):
+        flash("Paste a YouTube or Spotify playlist link.")
+        return redirect("/test")
+    db, me = store.connect(), uid()
+    lean.ensure_tables(db)
+    rows, spent = [], lean.Meter()
+
+    def measure(fn):
+        m = lean.Meter()
+        out = fn(lean.metered_youtube(me, m))
+        spent.units += m.units
+        for k, v in m.calls.items():
+            spent.calls[k] = spent.calls.get(k, 0) + v
+        return m.units, out
+
+    if yt_id:
+        sp = spotify_client(me)
+        lean.clear_cache()
+        def old_load(yt):
+            meta = yt.playlists().list(part="snippet", id=yt_id).execute()["items"]
+            return (meta[0]["snippet"]["title"], matcher.youtube_playlist_videos(yt, yt_id)) if meta else None
+        cur_load, loaded = measure(old_load)
+        if loaded is None:
+            flash("Couldn't open that YouTube playlist.")
+            return redirect("/test")
+        
+        title, items = loaded
+        unscanned = sum(store.get_match(db, i["video_id"]) is None for i in items)
+        clicks = max(1, -(-unscanned // BATCH_SIZE["yt2sp"]))
+        lean_first, _ = measure(lambda yt: lean.load_youtube_playlist(yt, db, yt_id))
+        lean_cached, _ = measure(lambda yt: lean.load_youtube_playlist(yt, db, yt_id))
+        lean.clear_cache()
+        lean_warm, _ = measure(lambda yt: lean.load_youtube_playlist(yt, db, yt_id))
+        check, _ = measure(lambda yt: lean.playlist_changed(yt, db, yt_id))
+
+        rows += [
+            ("Open the review page once", cur_load, lean_first,
+             "measured", "first visit; details get saved"),
+            ("Open it again (within 10 min)", cur_load, lean_cached, "measured", "kept in memory"),
+            ("Open it again (later)", cur_load, lean_warm, "measured", "details already saved"),
+            (f"Scan the {unscanned} unscanned songs ({clicks} clicks)", cur_load * (1 + 2 * clicks),
+             lean_first + 2 * clicks * lean_cached, "from measured loads",
+             "the old version loaded the playlist twice per click"),
+            ("Automation: 24 hourly runs", 24 * cur_load, 24 * check + lean_warm,
+             "from measured loads", f"now: {check}-unit change check per hour + one full load a day"),
+        ]
+    else:
+        loaded = DIRECTIONS["sp2yt"](None, spotify_client(me)).load(sp_id)
+        if loaded is None:
+            flash("Couldn't open that Spotify playlist.")
+            return redirect("/test")
+        
+        title, items = loaded
+        need = [t for t in items if store.get_match(db, t["track_id"], "reverse_matches") is None]
+        reuse = sum(lean.reuse_reverse_match(db, t) is not None for t in need)
+        search = 101  #
+        rows += [
+            (f"Scan the {len(need)} unscanned songs", len(need) * search, (len(need) - reuse) * search,
+             "counted, not run", f"{reuse} already matched YouTube → Spotify, no search needed"),
+            (f"Add all {len(items)} songs to YouTube", len(items) * 50, len(items) * 50,
+             "counted, not run", "playlistItems.insert is 50 each either way"),
+        ]
+    return render_template("test.html", title=title, rows=rows, spent=spent, link=link,
+                           result=True, kind="YouTube" if yt_id else "Spotify")
 
 @app.route("/cover/<track_id>")
 def spotify_cover(track_id):
@@ -237,7 +310,7 @@ def transfer_scan(slug, playlist_id):
     loaded = d.load(playlist_id)
     if loaded is None:
         return redirect(f"/transfer/{slug}/{playlist_id}")
-    todo = [i for i in loaded[1] if store.get_match(db, d.key(i), d.table) is None][:BATCH_SIZE]
+    todo = [i for i in loaded[1] if store.get_match(db, d.key(i), d.table) is None][:BATCH_SIZE[d.slug]]
     for item in todo:
         try:
             store.save_match(db, d.find(item), d.table)
@@ -245,6 +318,21 @@ def transfer_scan(slug, playlist_id):
             flash(f"Song lookup stopped: {error_message(e)}")
             break
     return redirect(f"/transfer/{slug}/{playlist_id}")
+
+@app.route("/transfer/<slug>/<playlist_id>/rescan/<key>", methods=["POST"])
+def transfer_rescan_one(slug, playlist_id, key):
+    d, db = direction(slug), store.connect()
+    save_ticks(d, db)
+    loaded = d.load(playlist_id)
+    item = next((i for i in (loaded[1] if loaded else []) if d.key(i) == key), None)
+    if item is None:
+        flash("That song isn't in this playlist anymore.")
+        return redirect(f"/transfer/{slug}/{playlist_id}")
+    try:
+        store.save_match(db, d.find(item), d.table)
+    except API_ERRORS as e:
+        flash(f"Song lookup stopped: {error_message(e)}")
+    return redirect(f"/transfer/{slug}/{playlist_id}#row-{key}")
 
 @app.route("/transfer/<slug>/<playlist_id>/rescan", methods=["POST"])
 def transfer_rescan(slug, playlist_id):
@@ -347,7 +435,7 @@ def automations_run(auto_id):
     auto = store.get_automation(db, auto_id, uid())
     if auto:
         direction(auto["direction"])
-        flash(f"{auto['dest_name']}: {automations.run(auto, youtube_client(uid()), spotify_client(uid()), db)}")
+        flash(f"{auto['dest_name']}: {automations.run(auto, youtube_client(uid()), spotify_client(uid()), db, force=True)}")
     return redirect("/automations")
 
 @app.route("/automations/<int:auto_id>/pause", methods=["POST"])

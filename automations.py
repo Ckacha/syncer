@@ -1,14 +1,18 @@
+import time
 from datetime import datetime, timedelta, timezone
 from googleapiclient.errors import HttpError
 from spotipy.exceptions import SpotifyException
 from transfer import API_ERRORS, DIRECTIONS, error_message
 
+import lean
 import matcher
 import store
 
 def accepted(match):
     if not match:
         return False
+    if matcher.excluded(match):
+        return False 
     if match.get("approved") is not None:
         return match["approved"] == 1
     return matcher.bucket(match["score"]) == "auto"
@@ -35,10 +39,27 @@ def pick_items(items, auto, now=None):
     items = sorted(items, key=lambda i: i["added_at"] or "", reverse=newest_first)
     return items[:auto["count"]] if auto["count"] else items
 
-def run(auto, yt, sp, db):
+FULL_REFRESH_HOURS = 24 
+
+def unchanged_youtube_source(d, auto):
+    if d.source != "YouTube" or not auto.get("dest_id") or auto.get("days"):
+        return False, None
+    count = lean.playlist_count(d.yt, auto["source_id"])
+    fresh = auto.get("source_checked") and time.time() - auto["source_checked"] < FULL_REFRESH_HOURS * 3600
+    return bool(count is not None and count == auto.get("source_count") and fresh), count
+
+def run(auto, yt, sp, db, force=False):
     d = DIRECTIONS[auto["direction"]](yt, sp)
+    count = None
     try:
+        unchanged, count = (False, None) if force else unchanged_youtube_source(d, auto)
+        if unchanged:
+            return auto.get("last_result") or "No changes."
         result = sync(d, auto, db)
+        if d.source == "YouTube":
+            if count is None:
+                count = lean.playlist_count(d.yt, auto["source_id"])
+            store.update_automation(db, auto["id"], source_count=count, source_checked=time.time())
 
     except API_ERRORS as e:
         result = f"Stopped: {error_message(e)}"

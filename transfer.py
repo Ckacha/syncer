@@ -2,6 +2,7 @@ import re
 import ssl
 import httplib2
 import requests
+import lean
 import matcher
 import store
 
@@ -84,7 +85,6 @@ class YouTubeToSpotify:
 
     @staticmethod
     def playlist_id_from(text):
-        """Full playlist/video url with ?list=... or a bare playlist id."""
         text = text.strip()
         m = re.search(r"[?&]list=([\w-]+)", text)
         if m:
@@ -103,10 +103,7 @@ class YouTubeToSpotify:
         return playlists
 
     def load(self, playlist_id):
-        meta = self.yt.playlists().list(part="snippet", id=playlist_id).execute()["items"]
-        if not meta:
-            return None
-        return meta[0]["snippet"]["title"], matcher.youtube_playlist_videos(self.yt, playlist_id)
+        return lean.load_youtube_playlist(self.yt, store.connect(), playlist_id)
 
     def key(self, item):
         return item["video_id"]
@@ -160,7 +157,6 @@ class SpotifyToYouTube:
 
     @staticmethod
     def playlist_id_from(text):
-        """open.spotify.com/playlist/<id>, spotify:playlist:<id> or a bare id."""
         m = re.search(r"playlist[/:]([A-Za-z0-9]{22})", text) or re.fullmatch(r"\s*([A-Za-z0-9]{22})\s*", text)
         return m.group(1) if m else None
 
@@ -189,7 +185,7 @@ class SpotifyToYouTube:
         return item["track_id"]
 
     def find(self, item):
-        return matcher.find_video(self.yt, item)
+        return lean.reuse_reverse_match(store.connect(), item) or matcher.find_video(self.yt, item)
 
     def row(self, item, match):
         row = {"key": item["track_id"], "src_title": item["track_name"], "src_img": item.get("image"),
