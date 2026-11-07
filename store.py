@@ -5,7 +5,7 @@ DB_FILE = "matches.db"
 TABLES = {
     "matches": ("video_id", (
         "video_id", "title", "channel", "duration_s", "clean_title", "artist",
-        "spotify_id", "spotify_name", "spotify_artists", "score",
+        "spotify_id", "spotify_name", "spotify_artists", "score", "spotify_image",
     )),
     "reverse_matches": ("track_id", (
         "track_id", "track_name", "track_artists", "duration_s",
@@ -49,25 +49,66 @@ def connect():
             last_run TEXT, last_result TEXT
         )
     """)
+    if "spotify_image" not in {r["name"] for r in db.execute("PRAGMA table_info(matches)")}:
+        db.execute("ALTER TABLE matches ADD COLUMN spotify_image TEXT")  
     have = {r["name"] for r in db.execute("PRAGMA table_info(automations)")}
     if "days" not in have:
         db.execute("ALTER TABLE automations ADD COLUMN days INTEGER")
     if "pick" not in have:
         db.execute("ALTER TABLE automations ADD COLUMN pick TEXT DEFAULT 'newest'")
+    if "owner" not in have:
+        db.execute("ALTER TABLE automations ADD COLUMN owner TEXT")
+    if "paused" not in have:
+        db.execute("ALTER TABLE automations ADD COLUMN paused INTEGER DEFAULT 0")
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS accounts (
+            provider TEXT NOT NULL,     -- 'spotify' or 'google'
+            account_id TEXT NOT NULL,   -- Spotify user id / YouTube channel id
+            uid TEXT NOT NULL,
+            PRIMARY KEY (provider, account_id)
+        )
+    """)
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users'").fetchone():
+        db.execute("INSERT OR IGNORE INTO accounts SELECT 'spotify', spotify_id, uid FROM users")
+        db.execute("DROP TABLE users")
+    db.commit()
     return db
 
-def automations(db):
-    return [dict(r) for r in db.execute("SELECT * FROM automations ORDER BY id")]
+def claim_account(db, provider, account_id, me):
+    row = db.execute("SELECT uid FROM accounts WHERE provider = ? AND account_id = ?",
+                     (provider, account_id)).fetchone()
+    if row and row["uid"] != me:
+        known = row["uid"]
+        db.execute("UPDATE automations SET owner = ? WHERE owner = ?", (known, me))
+        db.execute("UPDATE OR REPLACE accounts SET uid = ? WHERE uid = ?", (known, me))
+        db.commit()
+        return known
+    if not row:
+        db.execute("INSERT INTO accounts (provider, account_id, uid) VALUES (?, ?, ?)", (provider, account_id, me))
+        db.commit()
+    return me
 
-def get_automation(db, auto_id):
-    row = db.execute("SELECT * FROM automations WHERE id = ?", (auto_id,)).fetchone()
+def set_paused(db, auto_id, owner, paused):
+    db.execute("UPDATE automations SET paused = ? WHERE id = ? AND owner = ?", (int(paused), auto_id, owner))
+    db.commit()
+
+def automations(db, owner=None):
+    if owner is None:
+        rows = db.execute("SELECT * FROM automations WHERE owner IS NOT NULL AND NOT IFNULL(paused, 0) "
+                          "ORDER BY owner, id")
+    else:
+        rows = db.execute("SELECT * FROM automations WHERE owner = ? ORDER BY id", (owner,))
+    return [dict(r) for r in rows]
+
+def get_automation(db, auto_id, owner):
+    row = db.execute("SELECT * FROM automations WHERE id = ? AND owner = ?", (auto_id, owner)).fetchone()
     return dict(row) if row else None
 
-def add_automation(db, direction, source_id, source_title, dest_name, count, days=None, pick="newest"):
+def add_automation(db, owner, direction, source_id, source_title, dest_name, count, days=None, pick="newest"):
     db.execute(
-        "INSERT INTO automations (direction, source_id, source_title, dest_name, count, days, pick) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (direction, source_id, source_title, dest_name, count, days, pick),
+        "INSERT INTO automations (owner, direction, source_id, source_title, dest_name, count, days, pick) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (owner, direction, source_id, source_title, dest_name, count, days, pick),
     )
     db.commit()
 
@@ -78,8 +119,8 @@ def update_automation(db, auto_id, **fields):
     )
     db.commit()
 
-def delete_automation(db, auto_id):
-    db.execute("DELETE FROM automations WHERE id = ?", (auto_id,))
+def delete_automation(db, auto_id, owner):
+    db.execute("DELETE FROM automations WHERE id = ? AND owner = ?", (auto_id, owner))
     db.commit()
 
 def get_match(db, key, table="matches"):
@@ -99,6 +140,11 @@ def set_approved(db, approvals, table="matches"):
 def delete_matches(db, keys, table="matches"):
     pk, _ = TABLES[table]
     db.executemany(f"DELETE FROM {table} WHERE {pk} = ?", [(k,) for k in keys])
+    db.commit()
+
+def set_spotify_images(db, images):
+    db.executemany("UPDATE matches SET spotify_image = ? WHERE spotify_id = ?",
+                   [(url, tid) for tid, url in images.items()])
     db.commit()
 
 def save_match(db, match, table="matches"):

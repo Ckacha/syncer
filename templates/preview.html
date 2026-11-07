@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Review · Syncer{% endblock %}
+{% block title %}Review{% endblock %}
 {% block main_class %}wide{% endblock %}
 {% block content %}
   <a class="back" href="/transfer?dir={{ d.slug }}">&larr; Back</a>
@@ -56,10 +56,18 @@
                 <span class="pill {{ cls }}">{{ label }}</span>
               {% endif %}
             </td>
-            <td><a href="{{ r.src_url }}">{{ r.src_title }}</a><small>{{ r.src_sub }}</small></td>
+            <td>
+              <div class="song">
+                <span class="cover">{% if r.src_img %}<img src="{{ r.src_img }}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">{% endif %}</span>
+                <div><a href="{{ r.src_url }}">{{ r.src_title }}</a><small>{{ r.src_sub }}</small></div>
+              </div>
+            </td>
             <td>
               {% if r.dst_id %}
-                <a href="{{ r.dst_url }}">{{ r.dst_title }}</a><small>{{ r.dst_sub }}</small>
+              <div class="song">
+                <span class="cover">{% if r.dst_img %}<img src="{{ r.dst_img }}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">{% endif %}</span>
+                <div><a href="{{ r.dst_url }}">{{ r.dst_title }}</a><small>{{ r.dst_sub }}</small></div>
+              </div>
               {% elif r.scanned %}<span class="fine">no result</span>{% endif %}
             </td>
           </tr>

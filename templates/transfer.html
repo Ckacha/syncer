@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Transfer · Syncer{% endblock %}
+{% block title %}Transfer{% endblock %}
 {% block content %}
   {% set other = "yt2sp" if d.slug == "sp2yt" else "sp2yt" %}
   <section class="dir-switch" id="dir-switch">
@@ -21,18 +21,25 @@
              autocomplete="off" required>
       <button>Open</button>
     </form>
-    <ul class="list pl-list" id="pl-list">
-      {% for p in playlists %}
-        <li data-name="{{ p.title | lower }}">
-          <a href="/transfer/{{ d.slug }}/{{ p.id }}">
-            {% if p.image %}<img class="pl-img" src="{{ p.image }}" alt="" loading="lazy" referrerpolicy="no-referrer">
-            {% else %}<span class="pl-img" aria-hidden="true"></span>{% endif %}
-            <span>{{ p.title }}</span>
-          </a>
-        </li>
+    <div class="pl-list" id="pl-list">
+      {% for label, items in groups %}
+        <div class="pl-group">
+          <h3 class="pl-owner">{{ label }} <span class="fine">{{ items | length }}</span></h3>
+          <ul class="list">
+            {% for p in items %}
+              <li data-name="{{ p.title | lower }}">
+                <a href="/transfer/{{ d.slug }}/{{ p.id }}">
+                  {% if p.image %}<img class="pl-img" src="{{ p.image }}" alt="" loading="lazy" referrerpolicy="no-referrer">
+                  {% else %}<span class="pl-img" aria-hidden="true"></span>{% endif %}
+                  <span>{{ p.title }}</span>
+                </a>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
       {% endfor %}
-      <li class="empty" id="pl-empty" {% if playlists %}hidden{% endif %}>{% if playlists %}No matches. Paste a link instead.{% else %}None.{% endif %}</li>
-    </ul>
+      <p class="empty fine" id="pl-empty" {% if playlists %}hidden{% endif %}>{% if playlists %}No matches. Paste a link instead.{% else %}None.{% endif %}</p>
+    </div>
   </section>
 
 {% endblock %}
@@ -49,6 +56,10 @@
       const q = input.value.trim().toLowerCase();
       const filter = q && !looksLikeLink(q);
       rows.forEach((r) => { r.hidden = filter && !r.dataset.name.includes(q); });
+      // hide an owner's heading when none of their playlists match
+      document.querySelectorAll(".pl-group").forEach((g) => {
+        g.hidden = !g.querySelector("li[data-name]:not([hidden])");
+      });
       if (rows.length) empty.hidden = visible().length > 0;
     });
     document.getElementById("pl-form").addEventListener("submit", (e) => {

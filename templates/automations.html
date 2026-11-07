@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_rules.html" import rule_fields %}
-{% block title %}Automations · Syncer{% endblock %}
+{% block title %}Automations{% endblock %}
 {% block content %}
   <h1>Automations</h1>
 
@@ -12,13 +12,21 @@
     <div class="notice warn"><p>Not scheduled. Only runs when you click "Run now".</p></div>
   {% endif %}
 
+  <p class="fine">
+    Automations keep running every hour, even when you're not on this site, until you pause or delete them.
+    {% if youtube_acct and youtube_acct.name %}They're saved to your Google account <strong>{{ youtube_acct.name }}</strong>.
+    {% else %}They're saved to the Google account you log in with.{% endif %}
+    Log in with it on any device to see them.
+  </p>
+
   <section>
     {% for a in autos %}
-      <div class="card auto-card">
+      <div class="card auto-card{% if a.paused %} paused{% endif %}">
         <div>
           {{ a.source_title }} <span class="arrow">&rarr;</span>
           {% if a.dest_url %}<a href="{{ a.dest_url }}">{{ a.dest_name }}</a>
           {% else %}{{ a.dest_name }} <small>(made on first run)</small>{% endif %}
+          {% if a.paused %}<span class="pill warn">Paused</span>{% endif %}
         </div>
         <div class="auto-meta">
           <span>{{ a.arrow }}</span>
@@ -27,6 +35,9 @@
         </div>
         <div class="actions">
           <form method="post" action="/automations/{{ a.id }}/run"><button class="sm">Run now</button></form>
+          <form method="post" action="/automations/{{ a.id }}/pause">
+            <button class="ghost sm">{% if a.paused %}Resume{% else %}Pause{% endif %}</button>
+          </form>
           <a class="button ghost sm" href="/automations/{{ a.id }}/edit">Edit</a>
           <form method="post" action="/automations/{{ a.id }}/delete"
                 onsubmit="return confirm('Delete this automation? The playlist stays.')"><button class="danger sm">Delete</button></form>

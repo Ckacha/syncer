@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Something went wrong{% endblock %}
+{% block content %}
+  <h1>Couldn't load this page</h1>
+  <div class="notice"><p>{{ message }}</p></div>
+  
+  <div class="actions">
+    <a class="button" href="{{ request.full_path }}">Try again</a>
+    <a class="button ghost" href="/home">Home</a>
+  </div>
+
+{% endblock %}

@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from googleapiclient.errors import HttpError
 from spotipy.exceptions import SpotifyException
-from transfer import DIRECTIONS, blocked_message
+from transfer import API_ERRORS, DIRECTIONS, error_message
 
 import matcher
 import store
@@ -40,11 +40,8 @@ def run(auto, yt, sp, db):
     try:
         result = sync(d, auto, db)
 
-    except (SpotifyException, HttpError) as e:
-        msg = blocked_message(e)
-        if not msg:
-            raise
-        result = f"Stopped, nothing changed. {msg}"
+    except API_ERRORS as e:
+        result = f"Stopped: {error_message(e)}"
 
     store.update_automation(db, auto["id"], last_run=datetime.now().strftime("%Y-%m-%d %H:%M"), last_result=result) 
     return result 
@@ -93,6 +90,19 @@ def sync(d, auto, db):
         result += f", {needs_review} left out (no confident match, tick them on the review page)" 
     return result + "."
 
-def run_all(yt, sp):
+def run_all(clients_for):
     db = store.connect()
-    return [(auto, run(auto, yt, sp, db)) for auto in store.automations(db)]
+    results, clients = [], {}
+    for auto in store.automations(db):
+        owner = auto["owner"]
+        if owner not in clients:
+            try:
+                clients[owner] = clients_for(owner)
+            except Exception as e: 
+                clients[owner] = e
+        got = clients[owner]
+        if isinstance(got, Exception):
+            results.append((auto, f"Skipped, the owner needs to log in to both again ({type(got).__name__})."))
+            continue
+        results.append((auto, run(auto, *got, db)))
+    return results

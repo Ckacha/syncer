@@ -1,21 +1,78 @@
 import re
+import ssl
+import httplib2
+import requests
 import matcher
+import store
 
 from googleapiclient.errors import HttpError
 from spotipy.exceptions import SpotifyException
 
 YT_VIDEO = "https://www.youtube.com/watch?v={}"
+YT_THUMB = "https://i.ytimg.com/vi/{}/default.jpg" 
 SP_TRACK = "https://open.spotify.com/track/{}"
+SP_OEMBED = "https://open.spotify.com/oembed?url=https://open.spotify.com/track/{}"
 
+API_ERRORS = (SpotifyException, HttpError, requests.RequestException, httplib2.HttpLib2Error,
+              ConnectionError, TimeoutError, ssl.SSLError)
+SAVED = "Everything scanned so far is saved."
+
+
+def oembed_cover(track_id):
+    """Cover via Spotify's public oEmbed page. The Web API's batch /tracks is blocked (403) for
+    development-mode apps, and this doesn't count against the app's Spotify rate limit."""
+    try:
+        r = requests.get(SP_OEMBED.format(track_id), timeout=5)
+        return r.json().get("thumbnail_url") if r.ok else None
+    except (requests.RequestException, ValueError):
+        return None
+
+def _when(seconds):
+    if not seconds:
+        return "a while"
+    if seconds < 60:
+        return f"{seconds}s"
+    return f"{seconds // 3600}h {seconds % 3600 // 60}m" if seconds >= 3600 else f"{seconds // 60}m"
 
 def blocked_message(e):
     if isinstance(e, SpotifyException) and e.http_status == 429:
-        wait = int((e.headers or {}).get("Retry-After", 0))
-        when = f"{wait // 3600}h {wait % 3600 // 60}m" if wait else "a while"
-        return f"Spotify rate limit hit. Try again in {when}, everything scanned so far is saved."
-    if isinstance(e, HttpError) and e.resp.status == 403 and b"quotaExceeded" in e.content:
-        return "YouTube daily quota used up, it resets at midnight Pacific time. Everything scanned so far is saved."
+        try:
+            wait = int((e.headers or {}).get("Retry-After", 0))
+        except ValueError:
+            wait = 0
+        return f"Spotify rate limit hit, please try again in {_when(wait)}. {SAVED}"
+    if isinstance(e, HttpError):
+        body = e.content or b""
+        if e.resp.status == 403 and b"quotaExceeded" in body:
+            return f"YouTube daily quota was used up. It will reset at midnight Pacific time. {SAVED}"
+        if e.resp.status == 429 or b"rateLimitExceeded" in body or b"userRateLimitExceeded" in body:
+            return f"YouTube rate limit hit(too many requests too fast). Wait a minute and try again. {SAVED}"
     return None
+
+def error_message(e):
+    blocked = blocked_message(e)
+    if blocked:
+        return blocked
+    if isinstance(e, SpotifyException):
+        service, status, detail = "Spotify", e.http_status, (e.msg or "").split("\n")[-1].strip()
+    elif isinstance(e, HttpError):
+        service, status, detail = "YouTube", e.resp.status, (e.reason or "").strip()
+    else:
+        return (f"Couldn't reach Spotify or YouTube ({type(e).__name__}). Check your connection "
+                f"and try again. {SAVED}")
+    
+    if status == 401:
+        return f"Your {service} login expired. Log out of {service} on Home and log back in."
+    if status == 403 and service == "Spotify" and "registered" in detail.lower():
+        return ("Your Spotify account isn't on this app's allowlist yet (Spotify limits apps in development "
+                "mode). Ask the app owner to add you.")
+    if status == 403:
+        return f"{service} refused that request (no permission). It may be a private playlist. {detail}".strip()
+    if status == 404:
+        return f"{service} couldn't find that, it may have been deleted or made private."
+    if status and status >= 500:
+        return f"{service} is having problems on their end (error {status}). Try again in a few minutes. {SAVED}"
+    return f"{service} returned an error ({status}): {detail or 'no details'}. {SAVED}"
 
 
 class YouTubeToSpotify:
@@ -58,10 +115,10 @@ class YouTubeToSpotify:
         return matcher.find_match(self.sp, item)
 
     def row(self, item, match):
-        row = {"key": item["video_id"], "src_title": item["title"],
+        row = {"key": item["video_id"], "src_title": item["title"], "src_img": YT_THUMB.format(item["video_id"]),
                "src_url": YT_VIDEO.format(item["video_id"]), "src_sub": item["channel"]}
         if match:
-            row.update(dst_id=match["spotify_id"], dst_title=match["spotify_name"],
+            row.update(dst_id=match["spotify_id"], dst_title=match["spotify_name"], dst_img=match.get("spotify_image") or (f"/cover/{match['spotify_id']}" if match["spotify_id"] else None),
                        dst_url=SP_TRACK.format(match["spotify_id"]), dst_sub=match["spotify_artists"])
         return row
 
@@ -109,10 +166,12 @@ class SpotifyToYouTube:
 
     def my_playlists(self):
         playlists = []
+        me = self.sp.current_user()["id"]
         page = self.sp.current_user_playlists(limit=50)
         while page:
             playlists += [{"id": p["id"], "title": p["name"],
-                           "image": (p.get("images") or [{}])[-1].get("url")}
+                           "image": (p.get("images") or [{}])[-1].get("url"),
+                           "owner": None if (p.get("owner") or {}).get("id") == me else (p.get("owner") or {}).get("display_name") or "Someone else"}
                           for p in page["items"] if p]
             page = self.sp.next(page) if page["next"] else None
         return playlists
@@ -133,12 +192,14 @@ class SpotifyToYouTube:
         return matcher.find_video(self.yt, item)
 
     def row(self, item, match):
-        row = {"key": item["track_id"], "src_title": item["track_name"],
+        row = {"key": item["track_id"], "src_title": item["track_name"], "src_img": item.get("image"),
                "src_url": SP_TRACK.format(item["track_id"]), "src_sub": item["track_artists"]}
         if match:
             row.update(dst_id=match["video_id"], dst_title=match["video_title"],
+                       dst_img=YT_THUMB.format(match["video_id"]) if match["video_id"] else None,
                        dst_url=YT_VIDEO.format(match["video_id"]), dst_sub=match["video_channel"])
         return row
+
 
     def dest_id(self, match):
         return match["video_id"]

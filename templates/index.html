@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block title %}Home{% endblock %}
 {% block main_class %}home{% endblock %}
 {% block content %}
   <section class="cards">
@@ -38,7 +39,7 @@
   </section>
 
   <section class="home-next">
-    {% if not (spotify and youtube) %}<p class="fine">Log in to both to get started.</p>{% endif %}
+    {% if not (spotify and youtube) %}<p class="fine">You must log into both services to start using Syncer!</p>{% endif %}
     <p>Want to move a playlist between services? Head to <a href="/transfer">Transfer</a>.</p>
     <p>Want playlists to stay in sync on their own? Set it up in <a href="/automations">Automations</a>.</p>
   </section>

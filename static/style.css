@@ -271,6 +271,13 @@ input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px;
 
 .pl-list { margin-top: 14px; max-height: 60vh; overflow-y: auto; }
 .pl-list a { display: flex; align-items: center; gap: 12px; }
+.pl-group + .pl-group { margin-top: 16px; }
+.pl-owner {
+  position: sticky; top: 0; z-index: 1;
+  margin: 0; padding: 6px 4px;
+  font-size: 0.95rem; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.pl-owner .fine { margin-left: 6px; }
 .pl-img {
   width: 40px; height: 40px; flex: none; object-fit: cover;
   border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--sunken);
@@ -314,6 +321,7 @@ tr.pending td { color: var(--muted); opacity: 0.55; }
 .importbar { position: sticky; top: 0; z-index: 5; }
 
 .auto-card { display: grid; gap: 10px; }
+.auto-card.paused { opacity: 0.6; }
 .auto-meta { display: flex; flex-wrap: wrap; gap: 4px 20px; color: var(--muted); font-size: 0.88rem; }
 
 @media (max-width: 560px) {
@@ -384,7 +392,6 @@ main.landing {
 
 @media (prefers-reduced-motion: reduce) { .dir-mover, .dir-btn { transition: none; } }
 
-/* logo size follows the screen: ~72px on phones up to 160px on big monitors */
 .swap {
   --logo: clamp(72px, 11vw, 160px);
   display: flex; align-items: center; justify-content: center;
@@ -403,7 +410,6 @@ main.landing {
   animation: fade-up 1.4s ease forwards;
 }
 .swap-logo[data-side="b"] { animation-delay: 0.6s; }
-/* the global button:hover/:active shadow+nudge outranks all:unset; keep it off the logo buttons */
 .swap-logo:hover, .swap-logo:active { box-shadow: none; transform: none; }
 .swap-logo:focus-visible img { outline: 2px solid var(--accent); outline-offset: 3px; }
 .swap-logo img {
@@ -416,7 +422,6 @@ main.landing {
   box-shadow: 3px 3px 0 var(--line);
   transition: transform 0.35s ease;
 }
-/* hover: just a slow rise, the shadow stays put */
 .swap-logo:hover img { transform: translateY(-5px); }
 .swap-arrows {
   font-size: calc(var(--logo) * 0.4);
@@ -445,3 +450,11 @@ main.landing {
 @media (prefers-reduced-motion: reduce) {
   .swap-logo, .swap-arrows { animation: none; opacity: 1; transition: none; }
 }
+
+.song { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.song > div { min-width: 0; }
+.cover {
+  width: 44px; height: 44px; flex: none; overflow: hidden;
+  border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--sunken);
+}
+.cover img { display: block; width: 100%; height: 100%; object-fit: cover; }  

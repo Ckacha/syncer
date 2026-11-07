@@ -1,22 +1,26 @@
 import hmac
 import os
+import re
 import secrets
 import subprocess
 import sys
+import automations
+import matcher
+import store
+import auth
 
+from datetime import timedelta
 from flask import Flask, abort, flash, redirect, render_template, request, session
 from werkzeug.middleware.proxy_fix import ProxyFix
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.errors import HttpError
 from spotipy.exceptions import SpotifyException
+from transfer import API_ERRORS, DIRECTIONS, error_message, oembed_cover
 
-import automations
-import matcher
-import store
-from transfer import DIRECTIONS, blocked_message
 from auth import (
     GOOGLE_CLIENT_SECRETS_FILE,
     YOUTUBE_SCOPES,
+    NotLoggedIn,
     load_youtube_creds,
     save_youtube_creds,
     spotify_client,
@@ -33,7 +37,22 @@ TASK_NAME = "Syncer automations"
 BATCH_SIZE = 10  
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
+def load_secret_key():
+    """FLASK_SECRET_KEY from .env, or one generated once and saved in secrets/, so logins
+    survive restarts (a new random key on every restart logs everyone out)."""
+    if os.environ.get("FLASK_SECRET_KEY"):
+        return os.environ["FLASK_SECRET_KEY"]
+    path = os.path.join(auth.SECRETS_DIR, ".flask_secret")
+    if os.path.exists(path):
+        with open(path) as f:
+            return f.read().strip()
+    key = secrets.token_hex(32)
+    with open(path, "w") as f:
+        f.write(key)
+    return key
+
+app.secret_key = load_secret_key()
+app.permanent_session_lifetime = timedelta(days=365)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1) 
 
 OPEN_PATHS = {"/", "/password", "/callback", "/google/callback", "/privacy"}
@@ -43,6 +62,22 @@ def require_password():
     if APP_PASSWORD and not session.get("unlocked") and request.path not in OPEN_PATHS \
             and not request.path.startswith("/static/"):
         return redirect("/password")
+
+def api_error(e):
+    app.logger.warning("API error on %s: %r", request.path, e)
+    msg = error_message(e)
+    if request.method == "POST":  
+        flash(msg)
+        return redirect(request.referrer or "/home")
+    return render_template("error.html", message=msg), 503
+
+for _cls in API_ERRORS:
+    app.register_error_handler(_cls, api_error)
+
+@app.errorhandler(NotLoggedIn)
+def not_logged_in(_e):
+    flash("Log in to both Spotify and YouTube first.")
+    return redirect("/home")
 
 @app.route("/privacy")
 def privacy():
@@ -58,8 +93,14 @@ def password():
         flash("Wrong password.")
     return render_template("password.html")
 
+def uid():
+    if not auth.UID_RE.fullmatch(session.get("uid") or ""):
+        session["uid"] = secrets.token_urlsafe(24)
+        session.permanent = True
+    return session["uid"]
+
 def connected():
-    return spotify_logged_in(), load_youtube_creds() is not None
+    return spotify_logged_in(uid()), load_youtube_creds(uid()) is not None
 
 def direction(slug):
     if slug not in DIRECTIONS:
@@ -67,7 +108,7 @@ def direction(slug):
     if not all(connected()):
         flash("Log in to both Spotify and YouTube first.")
         abort(redirect("/home"))
-    return DIRECTIONS[slug](youtube_client(), spotify_client())
+    return DIRECTIONS[slug](youtube_client(uid()), spotify_client(uid()))
 
 def save_ticks(d, db):
     keys = request.form.getlist("key")
@@ -77,7 +118,9 @@ def save_ticks(d, db):
 
 def current_commit():
     try:
-        out = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+        out = subprocess.run(["git", "rev-parse", "HEAD"], 
+                             capture_output=True, 
+                             text=True,
                              cwd=os.path.dirname(os.path.abspath(__file__)), timeout=5)
         return out.stdout.strip() or None
     except (OSError, subprocess.SubprocessError):
@@ -93,21 +136,22 @@ def landing():
 ACCOUNTS = {} 
 
 def account_info(service):
-    if service not in ACCOUNTS:
+    key = (uid(), service)
+    if key not in ACCOUNTS:
         try:
             if service == "spotify":
-                me = spotify_client().current_user()
+                me = spotify_client(uid()).current_user()
                 images = me.get("images") or []
-                ACCOUNTS[service] = {"name": me.get("display_name") or me.get("id"),
-                                     "pic": images[0]["url"] if images else None}
+                ACCOUNTS[key] = {"name": me.get("display_name") or me.get("id"),
+                                 "pic": images[0]["url"] if images else None}
             else:
-                items = youtube_client().channels().list(part="snippet", mine=True).execute().get("items", [])
+                items = youtube_client(uid()).channels().list(part="snippet", mine=True).execute().get("items", [])
                 snip = items[0]["snippet"] if items else {}
-                ACCOUNTS[service] = {"name": snip.get("title"),
-                                     "pic": snip.get("thumbnails", {}).get("default", {}).get("url")}
-        except (SpotifyException, HttpError, OSError, KeyError):
+                ACCOUNTS[key] = {"name": snip.get("title"),
+                                 "pic": snip.get("thumbnails", {}).get("default", {}).get("url")}
+        except (SpotifyException, HttpError, OSError, KeyError, NotLoggedIn):
             return None
-    return ACCOUNTS[service]
+    return ACCOUNTS[key]
 
 @app.route("/home")
 def home():
@@ -121,7 +165,13 @@ def home():
 @app.route("/transfer")
 def transfer_start():
     d = direction(request.args.get("dir", "sp2yt"))
-    return render_template("transfer.html", d=d, playlists=d.my_playlists())
+    playlists = d.my_playlists()
+    groups = {}
+    for p in playlists:
+        groups.setdefault(p.get("owner"), []).append(p)
+    ordered = sorted(groups.items(), key=lambda kv: (kv[0] is not None, (kv[0] or "").lower()))
+    groups = [("Made by you" if owner is None else f"By {owner}", items) for owner, items in ordered]
+    return render_template("transfer.html", d=d, playlists=playlists, groups=groups)
 
 @app.route("/transfer/<slug>/open")
 def transfer_open(slug):
@@ -164,6 +214,22 @@ def transfer_review(slug, playlist_id):
         counts=counts, scanned=len(scanned), ticked=ticked, batch=BATCH_SIZE,
     )
 
+@app.route("/cover/<track_id>")
+def spotify_cover(track_id):
+    if not re.fullmatch(r"[A-Za-z0-9]{22}", track_id):
+        abort(404)
+    db = store.connect()
+    row = db.execute("SELECT spotify_image FROM matches WHERE spotify_id = ? AND spotify_image IS NOT NULL",
+                     (track_id,)).fetchone()
+    url = row["spotify_image"] if row else oembed_cover(track_id)
+    if not url:
+        abort(404)
+    if not row:
+        store.set_spotify_images(db, {track_id: url})
+    resp = redirect(url)
+    resp.headers["Cache-Control"] = "private, max-age=86400"
+    return resp
+
 @app.route("/transfer/<slug>/<playlist_id>/scan", methods=["POST"])
 def transfer_scan(slug, playlist_id):
     d, db = direction(slug), store.connect()
@@ -175,11 +241,8 @@ def transfer_scan(slug, playlist_id):
     for item in todo:
         try:
             store.save_match(db, d.find(item), d.table)
-        except (SpotifyException, HttpError) as e:
-            msg = blocked_message(e)
-            if not msg:
-                raise
-            flash(msg)
+        except API_ERRORS as e:
+            flash(f"Song lookup stopped: {error_message(e)}")
             break
     return redirect(f"/transfer/{slug}/{playlist_id}")
 
@@ -207,11 +270,8 @@ def transfer_import(slug, playlist_id):
     name = request.form.get("name", "").strip() or f"Synced from {d.source}"
     try:
         url, added = d.create(name, playlist_id, ids)
-    except (SpotifyException, HttpError) as e:
-        msg = blocked_message(e)
-        if not msg:
-            raise
-        flash(msg + " Your ticks are saved, try the import again later.")
+    except API_ERRORS as e:
+        flash(f"Import stopped: {error_message(e)} Your ticks are saved, try the import again later.")
         return redirect(f"/transfer/{slug}/{playlist_id}")
 
     return render_template(
@@ -229,13 +289,14 @@ def scheduled():
 @app.route("/automations")
 def automations_page():
     db = store.connect()
-    autos = store.automations(db)
+    autos = store.automations(db, uid())
     for a in autos:
         d = DIRECTIONS[a["direction"]]
         a["arrow"] = f"{d.source} → {d.dest}"
         a["dest_url"] = d.playlist_url(a["dest_id"]) if a["dest_id"] else None
         a["rules"] = automations.describe(a)
-    return render_template("automations.html", autos=autos, directions=DIRECTIONS.values(),
+    youtube_acct = account_info("youtube") if load_youtube_creds(uid()) else None
+    return render_template("automations.html", autos=autos, youtube_acct=youtube_acct, directions=DIRECTIONS.values(),
                            scheduled=scheduled(), task_name=TASK_NAME, windows=sys.platform == "win32", picks=automations.PICKS,
                            max_songs=automations.MAX_SONGS)
 
@@ -257,14 +318,15 @@ def automations_add():
     count, days, pick = read_rules(request.form)
     rules = automations.describe({"count": count, "days": days, "pick": pick})
     dest_name = request.form.get("dest_name", "").strip() or f"{loaded[0]} ({rules})"
-    store.add_automation(db, d.slug, source_id, loaded[0], dest_name, count, days, pick)
+    claim("google", google_account_id)  
+    store.add_automation(db, uid(), d.slug, source_id, loaded[0], dest_name, count, days, pick)
     flash(f'Added. Click "Run now" to create "{dest_name}" and fill it.')
     return redirect("/automations")
 
 @app.route("/automations/<int:auto_id>/edit", methods=["GET", "POST"])
 def automations_edit(auto_id):
     db = store.connect()
-    auto = store.get_automation(db, auto_id)
+    auto = store.get_automation(db, auto_id, uid())
     if not auto:
         return redirect("/automations")
     if request.method == "POST":
@@ -282,22 +344,32 @@ def automations_edit(auto_id):
 @app.route("/automations/<int:auto_id>/run", methods=["POST"])
 def automations_run(auto_id):
     db = store.connect()
-    auto = store.get_automation(db, auto_id)
+    auto = store.get_automation(db, auto_id, uid())
     if auto:
-        direction(auto["direction"]) 
-        flash(f"{auto['dest_name']}: {automations.run(auto, youtube_client(), spotify_client(), db)}")
+        direction(auto["direction"])
+        flash(f"{auto['dest_name']}: {automations.run(auto, youtube_client(uid()), spotify_client(uid()), db)}")
+    return redirect("/automations")
+
+@app.route("/automations/<int:auto_id>/pause", methods=["POST"])
+def automations_pause(auto_id):
+    db = store.connect()
+    auto = store.get_automation(db, auto_id, uid())
+    if auto:
+        paused = not auto["paused"]
+        store.set_paused(db, auto_id, uid(), paused)
+        flash(f"{auto['dest_name']}: " + ("paused, it won't run until you resume it." if paused else "resumed."))
     return redirect("/automations")
 
 @app.route("/automations/<int:auto_id>/delete", methods=["POST"])
 def automations_delete(auto_id):
-    store.delete_automation(store.connect(), auto_id)
+    store.delete_automation(store.connect(), auto_id, uid())
     flash("Automation deleted. The playlist it made is still there.")
     return redirect("/automations")
 
 @app.route("/login/spotify")
 def login_spotify():
     session["spotify_state"] = secrets.token_urlsafe(16)
-    return redirect(spotify_oauth(state=session["spotify_state"]).get_authorize_url())
+    return redirect(spotify_oauth(uid(), state=session["spotify_state"]).get_authorize_url())
 
 @app.route("/callback")
 def spotify_callback():
@@ -305,9 +377,28 @@ def spotify_callback():
         abort(400, "State mismatch, try logging in again.")
     if "error" in request.args:
         abort(400, request.args["error"])
-    spotify_oauth().get_access_token(request.args["code"], as_dict=False)
-    ACCOUNTS.pop("spotify", None)
+    me = uid()
+    spotify_oauth(me).get_access_token(request.args["code"], as_dict=False)
+    claim("spotify", lambda: spotify_client(me).current_user()["id"])
+    ACCOUNTS.clear()
     return redirect("/home")
+
+def claim(provider, get_account_id):
+    me = uid()
+    try:
+        account_id = get_account_id()
+    except (*API_ERRORS, NotLoggedIn, KeyError, IndexError):
+        return  
+    if not account_id:
+        return
+    owner = store.claim_account(store.connect(), provider, account_id, me)
+    if owner != me:
+        auth.merge_user(me, owner)
+        session["uid"] = owner
+
+def google_account_id():
+    items = youtube_client(uid()).channels().list(part="id", mine=True).execute().get("items", [])
+    return items[0]["id"]
 
 def google_flow(state=None):
     return Flow.from_client_secrets_file(
@@ -330,16 +421,16 @@ def google_callback():
     flow = google_flow(state=session.pop("google_state", None))
     flow.code_verifier = session.pop("google_verifier", None)
     flow.fetch_token(authorization_response=request.url)
-    save_youtube_creds(flow.credentials)
-    ACCOUNTS.pop("youtube", None)
+    save_youtube_creds(uid(), flow.credentials)
+    claim("google", google_account_id)
+    ACCOUNTS.clear()
     return redirect("/home")
 
 @app.route("/logout/<service>")
 def logout(service):
-    path = {"spotify": ".cache", "youtube": "token.json"}.get(service)
-    if path and os.path.exists(path):
-        os.remove(path)
-    ACCOUNTS.pop(service, None)
+    if service in auth.TOKEN_FILES:
+        auth.logout(uid(), service)
+    ACCOUNTS.pop((uid(), service), None)
     return redirect("/home")
 
 if __name__ == "__main__":

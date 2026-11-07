@@ -1,6 +1,9 @@
 import re
 import unicodedata
 from difflib import SequenceMatcher
+from urllib.parse import urljoin, urlparse
+
+import requests
 
 NOISE_WORDS = (
     "official", "video", "audio", "lyric", "lyrics", "hd", "hq", "4k", "mv",
@@ -10,9 +13,20 @@ CHANNEL_NOISE = re.compile(r"vevo|official|music|records|\s-\stopic$", re.I)
 FEAT = re.compile(r"\s*[\(\[]?\s*\b(?:ft|feat|featuring)\b\.?\s+[^\)\]]*[\)\]]?", re.I)
 DASHES = re.compile("\\s+[-\u2013\u2014]\\s+")  
 SLASH = re.compile(r"\s+/\s*|\s*/\s+") 
-SPOTIFY_LINK = re.compile(r"open\.spotify\.com/(?:intl-\w+/)?track/([A-Za-z0-9]{22})")
+SPOTIFY_LINK = re.compile(r"open\.spotify\.com/(?:intl-[\w-]+/)?(track|album)/([A-Za-z0-9]{22})")
+JP_TITLE = re.compile(r"[『「]([^』」]+)[』」]")  #need to find more seperating symbols aasdpioasdpasd
+CHANNEL_NUMBER = re.compile(r"\s*[\(（]\d+[\)）]\s*$")
 
-""" 6 seems to be the best overall but that does sorta use up too many searches imo, try eventually figuring out a better method!!!"""
+LINK_PAGE_HOSTS = (
+    "lnk.to", "linkco.re", "tunecore.co.jp", "song.link", "album.link", "odesli.co", "ffm.to",
+    "smarturl.it", "orcd.co", "fanlink.to", "fanlink.tv", "found.ee", "bfan.link", "ditto.fm",
+    "distrokid.com", "nex-tone.link", "big-up.style", "linkfire.com",
+) # if theres more links than these im gonna do something not fun
+
+URL = re.compile(r"https?://[^\s<>\"'()]+")
+SPOTIFY_REDIRECT = re.compile(r"https?://[^\s<>\"']+/(?:to|go|redirect|r)/spotify[^\s<>\"']*", re.I)
+
+LINKED_BONUS = 3  
 MAX_SEARCHES = 6
 AUTO_ADD = 8
 REVIEW = 5
@@ -35,7 +49,7 @@ VERSION_TAGS = {
     "cover": tag_word("cover", after=r"by\b|"),
     "acoustic": tag_word("acoustic", after=r"session|"),
 }
-VERSION_MISMATCH = 5  # 10 - 5 = review at best, never auto-added
+VERSION_MISMATCH = 5 
 
 def youtube_playlist_videos(yt, playlist_id):
     videos = []
@@ -50,7 +64,7 @@ def youtube_playlist_videos(yt, playlist_id):
                 "video_id": s["resourceId"]["videoId"],
                 "title": s["title"],
                 "channel": s["videoOwnerChannelTitle"],
-                "added_at": s["publishedAt"],  # when it was added to the playlist, not the upload date
+                "added_at": s["publishedAt"],  
             })
         req = yt.playlistItems().list_next(req, resp)
 
@@ -107,10 +121,16 @@ def parse_video(title, channel):
             if len(parts) == 2:
                 cleaned = parts[0]
                 extra = [a.strip() for a in parts[1].split(",")]
-        channel_artist = CHANNEL_NOISE.sub("", channel).strip()
+        channel_artist = CHANNEL_NUMBER.sub("", CHANNEL_NOISE.sub("", channel)).strip()
         artists += [channel_artist] + extra
 
     names = [cleaned]
+    jp = JP_TITLE.search(cleaned)
+    if jp:
+        before = cleaned[:jp.start()].strip(" .-　")
+        names.insert(0, jp.group(1).strip())
+        if before and not is_topic:
+            artists.insert(0, before)
     main = re.sub(r"\s*\([^)]*\)", "", cleaned).strip()
     if not main.isascii():
         names += [main] + [p.strip() for p in re.findall(r"\(([^)]*)\)", cleaned)]
@@ -145,9 +165,16 @@ def title_points(name, sp_title):
 def versions(title):
     return {tag for tag, pattern in VERSION_TAGS.items() if pattern.search(title)}
 
+def spotify_titles(name):
+    """The title, plus without an English translation tacked on: "ギルティ - Guilty" -> "ギルティ"."""
+    titles = [normalize(name)]
+    parts = DASHES.split(name, maxsplit=1)
+    if len(parts) == 2 and not parts[0].isascii() and parts[1].isascii():
+        titles.append(normalize(parts[0]))
+    return titles
+
 def score(video, names, artists, is_topic, track, artist_hit=False):
-    sp_title = normalize(track["name"])
-    points = max((title_points(n, sp_title) for n in names), default=0)
+    points = max((title_points(n, t) for n in names for t in spotify_titles(track["name"])), default=0)
 
     if versions(video["title"]) != versions(track["name"]):
         points -= VERSION_MISMATCH
@@ -179,15 +206,18 @@ def find_match(sp, video):
 
     best, best_score = None, 0
 
-    link = SPOTIFY_LINK.search(video.get("description") or "")
-    if link:
-        best, best_score = sp.track(link.group(1)), AUTO_ADD
+    linked = linked_tracks(sp, video.get("description") or "")
+    for track in linked:
+        s = score(video, names, artists, is_topic, track) + LINKED_BONUS
+        if len(linked) == 1 and versions(video["title"]) == versions(track["name"]):
+            s = max(s, AUTO_ADD)  # one linked song, same version: trust it
+        if s > best_score:
+            best, best_score = track, min(s, 10)
 
     queries = [(f'track:"{n}" artist:"{a}"', True) for a in artists[:2] for n in names[:3]]
-    # hopefully the playlist doesnt have any re-uploaders ashdoashdoiajsoid i hate edge cases
-    # ok covers exist i hate my life
     queries += [(n, False) for n in names[:2]]
     queries = queries[:MAX_SEARCHES]
+    #covers have been dealt with I think
 
     for q, artist_hit in queries:
         if best_score >= AUTO_ADD:
@@ -199,7 +229,6 @@ def find_match(sp, video):
             s = score(video, names, artists, is_topic, track, artist_hit)
             if s > best_score:
                 best, best_score = track, s
-        # put more accurate error handling if i have the time
 
     return {
         **video,
@@ -208,8 +237,70 @@ def find_match(sp, video):
         "spotify_id": best["id"] if best else None,
         "spotify_name": best["name"] if best else None,
         "spotify_artists": ", ".join(a["name"] for a in best["artists"]) if best else None,
+        "spotify_image": cover(best) if best else None,
         "score": best_score,
     }
+
+def cover(track):
+    images = (track.get("album") or {}).get("images") or []
+    return images[-1]["url"] if images else None
+
+_page_cache = {}
+
+def fetch_link_page(url, hops=3):
+    if url in _page_cache:
+        return _page_cache[url]
+    result = (None, "")
+    current = url
+    try:
+        for _ in range(hops + 1):
+            host = (urlparse(current).hostname or "").lower()
+            if host == "open.spotify.com":
+                result = (current, "")
+                break
+            if not any(host == h or host.endswith("." + h) for h in LINK_PAGE_HOSTS):
+                break
+            r = requests.get(current, timeout=6, allow_redirects=False, stream=True,
+                             headers={"User-Agent": "Mozilla/5.0 (Syncer playlist matcher)"})
+            if r.is_redirect:
+                current = urljoin(current, r.headers.get("Location", ""))
+                r.close()
+                continue
+            html = r.raw.read(1_000_000, decode_content=True).decode(r.encoding or "utf-8", "replace") if r.ok else ""
+            r.close()
+            result = (current, html)
+            break
+    except requests.RequestException:
+        pass
+    _page_cache[url] = result
+    return result
+
+def linked_spotify_ids(description, max_pages=2):
+    found = [(kind, sid) for kind, sid in SPOTIFY_LINK.findall(description)]
+    pages = [u for u in URL.findall(description)
+             if any((urlparse(u).hostname or "").lower().endswith(h) for h in LINK_PAGE_HOSTS)]
+    for page in pages[:max_pages]:
+        if found:
+            break
+        final, html = fetch_link_page(page)
+        found += SPOTIFY_LINK.findall(final or "") + SPOTIFY_LINK.findall(html)
+        if not found: 
+            for redirect in SPOTIFY_REDIRECT.findall(html)[:1]:
+                final, _ = fetch_link_page(redirect)
+                found += SPOTIFY_LINK.findall(final or "")
+    return list(dict.fromkeys(found))
+
+def linked_tracks(sp, description):
+    tracks = []
+    for kind, sid in linked_spotify_ids(description)[:3]:
+        try:
+            if kind == "track":
+                tracks.append(sp.track(sid))
+            else:
+                tracks += [t for t in sp.album_tracks(sid, limit=50)["items"] if t and t.get("id")]
+        except Exception: 
+            continue
+    return tracks
 
 def bucket(score):
     if score >= AUTO_ADD:
@@ -218,16 +309,14 @@ def bucket(score):
         return "review"
     return "skip"
 
-# spotify -> youtube
-
 def spotify_playlist_tracks(sp, playlist_id):
     tracks = []
     page = sp.playlist_items(playlist_id, limit=100, additional_types=("track",))
     while page:
         for entry in page["items"]:
-            t = entry.get("item") or entry.get("track")  # newer api renamed track -> item
+            t = entry.get("item") or entry.get("track")
             if not t or t.get("type") != "track" or not t.get("id"):
-                continue  # podcasts, local files
+                continue 
             tracks.append({
                 "track_id": t["id"],
                 "track_name": t["name"],
@@ -235,6 +324,7 @@ def spotify_playlist_tracks(sp, playlist_id):
                 "track_artists": ", ".join(a["name"] for a in t["artists"]),
                 "duration_s": t["duration_ms"] // 1000,
                 "added_at": entry.get("added_at") or "",
+                "image": cover(t),
             })
         page = sp.next(page) if page["next"] else None
     return tracks
@@ -245,7 +335,6 @@ def find_video(yt, track):
     resp = yt.search().list(part="id", q=f"{artist} {track['track_name']}", type="video", maxResults=5).execute()
     ids = [item["id"]["videoId"] for item in resp["items"]]
 
-    # pretend the track came from spotify search so score() works unchanged
     as_spotify = {
         "name": track["track_name"],
         "artists": [{"name": a} for a in track["artists"]],
