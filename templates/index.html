@@ -1,37 +1,38 @@
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8"><title>Syncer</title>
-  </head>
+{% extends "base.html" %}
+{% block content %}
+  <section class="cards" style="margin-top:0">
+    <div class="card service">
+      <div class="service-head">
+        <h2>Spotify</h2>
+        {% if spotify %}<span class="pill ok">Connected</span>{% else %}<span class="pill">Not connected</span>{% endif %}
+      </div>
+      <div class="actions">
+        {% if spotify %}<a class="button ghost sm" href="/logout/spotify">Log out</a>
+        {% else %}<a class="button" href="/login/spotify">Log in with Spotify</a>{% endif %}
+      </div>
+    </div>
 
-  <body>
-    <h1>Syncer</h1>
-    {% for msg in get_flashed_messages() %}
-      <p style="background:#fff3cd;padding:8px">{{ msg }}</p>
-    {% endfor %}
+    <div class="card service">
+      <div class="service-head">
+        <h2>YouTube</h2>
+        {% if youtube %}<span class="pill ok">Connected</span>{% else %}<span class="pill">Not connected</span>{% endif %}
+      </div>
+      <div class="actions">
+        {% if youtube %}<a class="button ghost sm" href="/logout/youtube">Log out</a>
+        {% else %}<a class="button" href="/login/youtube">Log in with Google</a>{% endif %}
+      </div>
+    </div>
+  </section>
 
-    <h2>Spotify</h2>
-    {% if spotify %}
-      <p>Connected. <a href="/logout/spotify">Log out</a></p>
-    {% else %}
-      <p><a href="/login/spotify">Log in with Spotify</a></p>
-    {% endif %}
-
-    <h2>YouTube</h2>
-    {% if youtube %}
-      <p>Connected. <a href="/logout/youtube">Log out</a></p>
-    {% else %}
-      <p><a href="/login/youtube">Log in with Google</a></p>
-    {% endif %}
-
-    <p>
+  <section>
+    <div class="actions">
       {% if spotify and youtube %}
-        <a href="/transfer"><button style="font-size:1.3em;padding:8px 24px">Transfer</button></a>
-        <a href="/automations"><button style="font-size:1.3em;padding:8px 24px">Automations</button></a>
+        <a class="button big" href="/transfer">Transfer</a>
+        <a class="button big ghost" href="/automations">Automations</a>
       {% else %}
-        <button style="font-size:1.3em;padding:8px 24px" disabled>Transfer</button>
-        Log in to both to transfer playlists.
+        <span class="button big disabled">Transfer</span>
+        <span class="fine">Log in to both first.</span>
       {% endif %}
-    </p>
-  </body>
-</html>
+    </div>
+  </section>
+{% endblock %}

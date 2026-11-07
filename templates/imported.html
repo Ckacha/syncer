@@ -1,19 +1,15 @@
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8"><title>Imported</title>
-  </head>
-
-  <body>
-    <h1>Created "{{ name }}"</h1>
-    <p>Added {{ added }} of {{ total }} songs.</p>
-    {% if added < total %}
-      <p style="background:#fff3cd;padding:8px">
-        YouTube's daily quota ran out partway. The playlist has the first {{ added }} songs,
-        add the rest by hand or import again after midnight Pacific time.
-      </p>
-    {% endif %}
-    <p><a href="{{ url }}">Open it in {{ d.dest }}</a></p>
-    <p><a href="{{ back }}">&larr; Back to the review</a></p>
-  </body>
-</html>
+{% extends "base.html" %}
+{% block title %}Imported · Syncer{% endblock %}
+{% block content %}
+  <h1>Created “{{ name }}”</h1>
+  <p class="lede">Added {{ added }} of {{ total }} songs.</p>
+  {% if added < total %}
+    <section class="notice warn">
+      <p>YouTube's daily quota ran out. Import again after midnight Pacific time for the rest.</p>
+    </section>
+  {% endif %}
+  <section class="actions">
+    <a class="button" href="{{ url }}">Open in {{ d.dest }}</a>
+    <a class="button ghost" href="{{ back }}">Back</a>
+  </section>
+{% endblock %}

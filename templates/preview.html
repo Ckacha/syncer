@@ -1,80 +1,87 @@
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8"><title>Review</title>
-  </head>
+{% extends "base.html" %}
+{% block title %}Review · Syncer{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+  <a class="back" href="/transfer?dir={{ d.slug }}">&larr; Back</a>
+  <h1>{{ title }}</h1>
 
-  <body>
-    <p><a href="/transfer?dir={{ d.slug }}">&larr; Back</a></p>
-    <h1>{{ title }}: {{ d.source }} &rarr; {{ d.dest }}</h1>
-    {% for msg in get_flashed_messages() %}
-      <p style="background:#fff3cd;padding:8px">{{ msg }}</p>
-    {% endfor %}
+  <form method="post">
+    <section class="card">
+      <div class="service-head">
+        <h2>Scanned {{ scanned }} / {{ rows | length }}</h2>
+        {% if scanned < rows | length %}
+          <button class="sm" formaction="/transfer/{{ d.slug }}/{{ playlist_id }}/scan">Scan next {{ batch }}</button>
+        {% else %}
+          <span class="pill ok">All scanned</span>
+        {% endif %}
+      </div>
+      <progress class="progress" value="{{ scanned }}" max="{{ rows | length or 1 }}">{{ scanned }} / {{ rows | length }}</progress>
+      {% if scanned < rows | length %}<p class="fine" style="margin:0">{{ d.cost_note }}</p>{% endif %}
+      <div class="stats">
+        <span class="pill ok">{{ counts.auto }} auto-add</span>
+        <span class="pill warn">{{ counts.review }} review</span>
+        <span class="pill bad">{{ counts.skip }} skip</span>
+      </div>
+    </section>
 
-    <form method="post">
-    <p style="background:#e7f1ff;padding:8px">
-      Scanned {{ scanned }} / {{ rows | length }}.
-      {% if scanned < rows | length %}
-        <button formaction="/transfer/{{ d.slug }}/{{ playlist_id }}/scan">Scan next {{ batch }}</button>
-        <small>{{ d.cost_note }}</small>
-      {% else %}
-        All scanned.
-      {% endif %}
-    </p>
-    <p>
-      {{ counts.auto }} auto-add (8-10) &middot;
-      {{ counts.review }} need review (5-7) &middot;
-      {{ counts.skip }} skipped (0-4)
-    </p>
+    <section class="card importbar">
+      <div class="inline-form">
+        <input name="name" value="{{ title }}" aria-label="New {{ d.dest }} playlist name">
+        <button formaction="/transfer/{{ d.slug }}/{{ playlist_id }}/import">
+          Create (<span id="ticked">{{ ticked }}</span>)
+        </button>
+      </div>
+      {% if d.import_cost(1) %}<p class="fine" id="cost" style="margin:8px 0 0">{{ d.import_cost(ticked) }}</p>{% endif %}
+    </section>
 
-    <p>
-      New {{ d.dest }} playlist name:
-      <input name="name" value="{{ title }}" size="40">
-      <button formaction="/transfer/{{ d.slug }}/{{ playlist_id }}/import">
-        Create playlist with ticked songs (<span id="ticked">{{ ticked }}</span>)
-      </button>
-      {% if d.import_cost(1) %}<br><small id="cost">{{ d.import_cost(ticked) }}</small>{% endif %}
-    </p>
+    <section class="card flush">
+      <div class="table-wrap">
+        <table>
+          <tr>
+            <th>Add</th><th>Score</th><th>Status</th>
+            <th>{{ d.source }}</th><th>{{ d.dest }}</th>
+          </tr>
+          {% for r in rows %}
+          <tr class="{{ r.bucket if r.scanned else 'pending' }}">
+            <td>
+              {% if r.scanned %}
+                <input type="hidden" name="key" value="{{ r.key }}">
+                <input type="checkbox" name="confirm" value="{{ r.key }}" aria-label="Add {{ r.src_title }}"
+                       {% if r.checked %}checked{% endif %} {% if not r.dst_id %}disabled{% endif %}>
+              {% endif %}
+            </td>
+            <td class="score">{{ r.score if r.scanned }}</td>
+            <td>
+              {% if r.scanned %}
+                {% set label, cls = {"auto": ("auto-add", "ok"), "review": ("review", "warn"), "skip": ("skip", "bad")}[r.bucket] %}
+                <span class="pill {{ cls }}">{{ label }}</span>
+              {% endif %}
+            </td>
+            <td><a href="{{ r.src_url }}">{{ r.src_title }}</a><small>{{ r.src_sub }}</small></td>
+            <td>
+              {% if r.dst_id %}
+                <a href="{{ r.dst_url }}">{{ r.dst_title }}</a><small>{{ r.dst_sub }}</small>
+              {% elif r.scanned %}<span class="fine">no result</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+    </section>
+  </form>
 
-    <table border="1" cellpadding="4">
-      <tr>
-        <th>Add</th><th>Score</th><th>Status</th>
-        <th>{{ d.source }}</th><th>{{ d.dest }} match</th>
-      </tr>
-      {% for r in rows %}
-      <tr {% if not r.scanned %}style="color:#999"{% endif %}>
-        <td>
-          {% if r.scanned %}
-            <input type="hidden" name="key" value="{{ r.key }}">
-            <input type="checkbox" name="confirm" value="{{ r.key }}"
-                   {% if r.checked %}checked{% endif %} {% if not r.dst_id %}disabled{% endif %}>
-          {% endif %}
-        </td>
-        <td>{{ r.score if r.scanned }}</td>
-        <td>{{ {"auto": "auto-add", "review": "review", "skip": "skip"}[r.bucket] if r.scanned else "not scanned" }}</td>
-        <td><a href="{{ r.src_url }}">{{ r.src_title }}</a><br><small>{{ r.src_sub }}</small></td>
-        <td>
-          {% if r.dst_id %}
-            <a href="{{ r.dst_url }}">{{ r.dst_title }}</a><br><small>{{ r.dst_sub }}</small>
-          {% elif r.scanned %}no result{% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </table>
-    </form>
-
-    <form method="post" action="/transfer/{{ d.slug }}/{{ playlist_id }}/rescan"
-          onsubmit="return confirm('Forget every match for this playlist and scan from scratch?')">
-      <p><button>Rescan all</button></p>
-    </form>
-
-    <script>
-        document.addEventListener("change", () => {
-        const n = document.querySelectorAll('input[name="confirm"]:checked').length;
-        document.getElementById("ticked").textContent = n;
-        const cost = document.getElementById("cost");
-        if (cost) cost.textContent = cost.textContent.replace(/[\d,]+/, (50 + 50 * n).toLocaleString("en-US"));
-      });
-    </script>
-  </body>
-</html>
+  <form method="post" action="/transfer/{{ d.slug }}/{{ playlist_id }}/rescan"
+        onsubmit="return confirm('Forget every match for this playlist and scan from scratch?')">
+    <section class="actions"><button class="danger">Rescan all</button></section>
+  </form>
+{% endblock %}
+{% block scripts %}
+  <script>
+    document.addEventListener("change", () => {
+      const n = document.querySelectorAll('input[name="confirm"]:checked').length;
+      document.getElementById("ticked").textContent = n;
+      const cost = document.getElementById("cost");
+      if (cost) cost.textContent = cost.textContent.replace(/[\d,]+/, (50 + 50 * n).toLocaleString("en-US"));
+    });
+  </script>
+{% endblock %}

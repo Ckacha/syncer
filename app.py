@@ -36,12 +36,17 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1) 
 
-OPEN_PATHS = {"/password", "/callback", "/google/callback"}
+OPEN_PATHS = {"/password", "/callback", "/google/callback", "/privacy"}
 
 @app.before_request
 def require_password():
-    if APP_PASSWORD and not session.get("unlocked") and request.path not in OPEN_PATHS:
+    if APP_PASSWORD and not session.get("unlocked") and request.path not in OPEN_PATHS \
+            and not request.path.startswith("/static/"):
         return redirect("/password")
+
+@app.route("/privacy")
+def privacy():
+    return render_template("privacy.html")
 
 @app.route("/password", methods=["GET", "POST"])
 def password():

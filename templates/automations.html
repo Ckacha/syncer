@@ -1,70 +1,65 @@
-<!doctype html>
+{% extends "base.html" %}
 {% from "_rules.html" import rule_fields %}
-<html>
-  <head>
-    <meta charset="utf-8"><title>Automations</title>
-  </head>
+{% block title %}Automations · Syncer{% endblock %}
+{% block content %}
+  <h1>Automations</h1>
 
-  <body>
-    <p><a href="/">&larr; Back</a></p>
-    <h1>Automations</h1>
-    {% for msg in get_flashed_messages() %}
-      <p style="background:#fff3cd;padding:8px">{{ msg }}</p>
-    {% endfor %}
+  {% if scheduled %}
+    <div class="notice ok">
+      <p>Runs every hour{% if windows %} while this computer is on{% endif %}.</p>
+    </div>
+  {% else %}
+    <div class="notice warn"><p>Not scheduled. Only runs when you click "Run now".</p></div>
+  {% endif %}
 
-    {% if scheduled %}
-      <p style="background:#e6f4ea;padding:8px">
-        {% if windows %}Running automatically every hour (Windows task "{{ task_name }}"). Your PC has to be on.
-        {% else %}Running automatically every hour on the server.{% endif %}
-        Log: <code>automations.log</code>
-      </p>
-    {% else %}
-      <p style="background:#fff3cd;padding:8px">
-        Not scheduled yet, automations only run when you click "Run now".
-      </p>
-    {% endif %}
-
-    <h2>Your automations</h2>
-    <table border="1" cellpadding="4">
-      <tr><th>Direction</th><th>Keeps</th><th>From</th><th>Into</th><th>Last run</th><th></th></tr>
-      {% for a in autos %}
-      <tr>
-        <td>{{ a.arrow }}</td>
-        <td>{{ a.rules }}</td>
-        <td>{{ a.source_title }}</td>
-        <td>
+  <section>
+    {% for a in autos %}
+      <div class="card auto-card">
+        <div>
+          {{ a.source_title }} <span class="arrow">&rarr;</span>
           {% if a.dest_url %}<a href="{{ a.dest_url }}">{{ a.dest_name }}</a>
           {% else %}{{ a.dest_name }} <small>(made on first run)</small>{% endif %}
-        </td>
-        <td>{{ a.last_run or "never" }}<br><small>{{ a.last_result or "" }}</small></td>
-        <td>
-          <form method="post" action="/automations/{{ a.id }}/run" style="display:inline"><button>Run now</button></form>
-          <a href="/automations/{{ a.id }}/edit">Edit</a>
-          <form method="post" action="/automations/{{ a.id }}/delete" style="display:inline"
-                onsubmit="return confirm('Delete this automation? The playlist it made stays.')"><button>Delete</button></form>
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="6">None yet.</td></tr>
-      {% endfor %}
-    </table>
+        </div>
+        <div class="auto-meta">
+          <span>{{ a.arrow }}</span>
+          <span>{{ a.rules }}</span>
+          <span>Last run: {{ a.last_run or "never" }}{% if a.last_result %} · {{ a.last_result }}{% endif %}</span>
+        </div>
+        <div class="actions">
+          <form method="post" action="/automations/{{ a.id }}/run"><button class="sm">Run now</button></form>
+          <a class="button ghost sm" href="/automations/{{ a.id }}/edit">Edit</a>
+          <form method="post" action="/automations/{{ a.id }}/delete"
+                onsubmit="return confirm('Delete this automation? The playlist stays.')"><button class="danger sm">Delete</button></form>
+        </div>
+      </div>
+    {% else %}
+      <p class="fine">None yet.</p>
+    {% endfor %}
+  </section>
 
-    <h2>New automation</h2>
-    <form method="post" action="/automations">
-      <p>
-        <select name="direction">
+  <section>
+    <h2>New</h2>
+    <form method="post" action="/automations" class="card">
+      <div class="field">
+        <label for="direction">Direction</label>
+        <select id="direction" name="direction">
           {% for d in directions %}<option value="{{ d.slug }}">{{ d.source }} &rarr; {{ d.dest }}</option>{% endfor %}
         </select>
-      </p>
-      <p>Source playlist link: <input name="source" size="60" required></p>
+      </div>
+      <div class="field">
+        <label for="source">Source playlist link</label>
+        <input id="source" name="source" required>
+      </div>
       {{ rule_fields({"count": 30, "days": None, "pick": "newest"}, picks, max_songs) }}
-      <p>Into a new playlist called: <input name="dest_name" size="40" placeholder="defaults to &quot;<source> (newest 30 songs)&quot;"></p>
-      <p><button>Add automation</button></p>
+      <div class="field">
+        <label for="dest_name">New playlist name</label>
+        <input id="dest_name" name="dest_name" placeholder="optional">
+      </div>
+      <div class="actions" style="margin-top:18px"><button>Add</button></div>
     </form>
-    <p><small>
-      Confident(8+ trust score) matches and songs you've ticked will get added to the playlist.
-      Songs that stop matching the rules (too old, or pushed out of the limit) are removed, so don't add songs to that playlist by hand.
-      Spotify &rarr; YouTube costs 100 YouTube quota per new song (search) plus 50 to add it, so big limits or no limit can use up a day's quota fast.
-    </small></p>
-  </body>
-</html>
+    <p class="fine">
+      Songs that stop matching the rules get removed, so don't edit these playlists by hand.
+      Spotify &rarr; YouTube uses 150 YouTube quota per new song.
+    </p>
+  </section>
+{% endblock %}

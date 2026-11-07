@@ -4,6 +4,7 @@ import spotipy
 """main login helpers, double check refs in the notes file for specifics"""
 
 from dotenv import load_dotenv
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -50,7 +51,11 @@ def load_youtube_creds():
         return None
     creds = Credentials.from_authorized_user_file(YOUTUBE_TOKEN_FILE, YOUTUBE_SCOPES)
     if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+        try:
+            creds.refresh(Request())
+        except RefreshError:
+            os.remove(YOUTUBE_TOKEN_FILE)
+            return None
         save_youtube_creds(creds)
     return creds if creds.valid else None
 

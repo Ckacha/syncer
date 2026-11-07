@@ -1,16 +1,16 @@
 {% macro rule_fields(a, picks, max_songs) %}
-  <p>
+  <p class="rule">
     Keep the
     <select name="pick">
       {% for p in picks %}<option value="{{ p }}" {% if (a.pick or "newest") == p %}selected{% endif %}>{{ p }}</option>{% endfor %}
     </select>
-    <input name="count" type="number" min="1" max="{{ max_songs }}" style="width:5em"
+    <input name="count" type="number" min="1" max="{{ max_songs }}"
            value="{{ a.count if a.count else '' }}" placeholder="all"> songs
     <small>(blank = no limit, max {{ max_songs }})</small>
   </p>
-  <p>
+  <p class="rule">
     Only songs added in the last
-    <input name="days" type="number" min="1" max="3650" style="width:5em"
+    <input name="days" type="number" min="1" max="3650"
            value="{{ a.days if a.days else '' }}" placeholder="any"> days
     <small>(blank = any time)</small>
   </p>

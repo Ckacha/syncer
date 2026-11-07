@@ -1,22 +1,16 @@
-<!doctype html>
+{% extends "base.html" %}
 {% from "_rules.html" import rule_fields %}
-<html>
-  <head>
-    <meta charset="utf-8"><title>Edit automation</title>
-  </head>
+{% block title %}Edit automation · Syncer{% endblock %}
+{% block content %}
+  <a class="back" href="/automations">&larr; Back</a>
+  <h1>{{ a.source_title }}</h1>
 
-  <body>
-    <p><a href="/automations">&larr; Back</a></p>
-    <h1>Edit automation</h1>
-    
-    <p>From <b>{{ a.source_title }}</b></p>
-    
-    <form method="post">
-      {{ rule_fields(a, picks, max_songs) }}
-      <p>Playlist name: <input name="dest_name" size="40" value="{{ a.dest_name }}"></p>
-      <p>
-        <button>Save</button>
-      </p>
-    </form>
-  </body>
-</html>
+  <form method="post" class="card" style="margin-top:16px">
+    {{ rule_fields(a, picks, max_songs) }}
+    <div class="field">
+      <label for="dest">Playlist name</label>
+      <input id="dest" name="dest_name" value="{{ a.dest_name }}">
+    </div>
+    <div class="actions" style="margin-top:18px"><button>Save</button></div>
+  </form>
+{% endblock %}
