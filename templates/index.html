@@ -1,9 +1,16 @@
 {% extends "base.html" %}
+{% block main_class %}home{% endblock %}
 {% block content %}
-  <section class="cards" style="margin-top:0">
+  <section class="cards">
     <div class="card service">
       <div class="service-head">
-        <h2>Spotify</h2>
+        <div class="service-id">
+          <img class="service-logo" src="{{ url_for('static', filename='media/spotify.svg') }}" alt="">
+          <div>
+            <h2>Spotify</h2>
+            {% if spotify_acct and spotify_acct.name %}<p class="fine account">{% if spotify_acct.pic %}<img class="pfp" src="{{ spotify_acct.pic }}" alt="" referrerpolicy="no-referrer">{% endif %}{{ spotify_acct.name }}</p>{% endif %}
+          </div>
+        </div>
         {% if spotify %}<span class="pill ok">Connected</span>{% else %}<span class="pill">Not connected</span>{% endif %}
       </div>
       <div class="actions">
@@ -14,7 +21,13 @@
 
     <div class="card service">
       <div class="service-head">
-        <h2>YouTube</h2>
+        <div class="service-id">
+          <img class="service-logo" src="{{ url_for('static', filename='media/youtube.svg') }}" alt="">
+          <div>
+            <h2>YouTube</h2>
+            {% if youtube_acct and youtube_acct.name %}<p class="fine account">{% if youtube_acct.pic %}<img class="pfp" src="{{ youtube_acct.pic }}" alt="" referrerpolicy="no-referrer">{% endif %}{{ youtube_acct.name }}</p>{% endif %}
+          </div>
+        </div>
         {% if youtube %}<span class="pill ok">Connected</span>{% else %}<span class="pill">Not connected</span>{% endif %}
       </div>
       <div class="actions">
@@ -24,15 +37,9 @@
     </div>
   </section>
 
-  <section>
-    <div class="actions">
-      {% if spotify and youtube %}
-        <a class="button big" href="/transfer">Transfer</a>
-        <a class="button big ghost" href="/automations">Automations</a>
-      {% else %}
-        <span class="button big disabled">Transfer</span>
-        <span class="fine">Log in to both first.</span>
-      {% endif %}
-    </div>
+  <section class="home-next">
+    {% if not (spotify and youtube) %}<p class="fine">Log in to both to get started.</p>{% endif %}
+    <p>Want to move a playlist between services? Head to <a href="/transfer">Transfer</a>.</p>
+    <p>Want playlists to stay in sync on their own? Set it up in <a href="/automations">Automations</a>.</p>
   </section>
 {% endblock %}

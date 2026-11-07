@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22">
+  <style>
+    .m { stroke: #161616; fill: none; }
+    .p { fill: #161616; }
+    @media (prefers-color-scheme: dark) { .m { stroke: #e8e8e8; } .p { fill: #e8e8e8; } }
+  </style>
+  <rect class="m" x="1" y="1" width="20" height="20" rx="3" stroke-width="2"/>
+  <rect class="p" x="6" y="7" width="3" height="8"/>
+  <rect class="p" x="13" y="7" width="3" height="8"/>
+</svg>

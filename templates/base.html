@@ -7,22 +7,25 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Salsa&display=swap">
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   </head>
 
   <body>
+    {% if not hide_header %}
     <header class="topbar">
       <div class="topbar-inner">
         <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>Syncer</a>
         {% if not hide_nav %}
         <nav class="nav">
-          {% for href, label in [("/", "Home"), ("/transfer", "Transfer"), ("/automations", "Automations")] %}
-            <a href="{{ href }}" {% if (href == "/" and request.path == "/") or (href != "/" and request.path.startswith(href)) %}aria-current="page"{% endif %}>{{ label }}</a>
+          {% for href, label in [("/home", "Home"), ("/transfer", "Transfer"), ("/automations", "Automations")] %}
+            <a href="{{ href }}" {% if request.path.startswith(href) %}aria-current="page"{% endif %}>{{ label }}</a>
           {% endfor %}
         </nav>
         {% endif %}
       </div>
     </header>
+    {% endif %}
 
     <main class="{% block main_class %}{% endblock %}">
       {% for msg in get_flashed_messages() %}

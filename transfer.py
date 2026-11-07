@@ -21,8 +21,6 @@ def blocked_message(e):
 class YouTubeToSpotify:
     slug, source, dest = "yt2sp", "YouTube", "Spotify"
     table = "matches"
-    cost_note = ("Scanning uses Spotify searches. No daily limit, but going too fast "
-                 "gets the app blocked for hours.")
 
     def __init__(self, yt, sp):
         self.yt, self.sp = yt, sp
@@ -41,7 +39,9 @@ class YouTubeToSpotify:
         req = self.yt.playlists().list(part="snippet", mine=True, maxResults=50)
         while req:
             resp = req.execute()
-            playlists += [{"id": p["id"], "title": p["snippet"]["title"]} for p in resp["items"]]
+            playlists += [{"id": p["id"], "title": p["snippet"]["title"],
+                           "image": p["snippet"].get("thumbnails", {}).get("default", {}).get("url")}
+                          for p in resp["items"]]
             req = self.yt.playlists().list_next(req, resp)
         return playlists
 
@@ -97,8 +97,6 @@ class YouTubeToSpotify:
 class SpotifyToYouTube:
     slug, source, dest = "sp2yt", "Spotify", "YouTube"
     table = "reverse_matches"
-    cost_note = ("Each scan of 10 uses about 1,010 of your 10,000 daily YouTube units "
-                 "(a YouTube search costs 100).")
 
     def __init__(self, yt, sp):
         self.yt, self.sp = yt, sp
@@ -113,7 +111,9 @@ class SpotifyToYouTube:
         playlists = []
         page = self.sp.current_user_playlists(limit=50)
         while page:
-            playlists += [{"id": p["id"], "title": p["name"]} for p in page["items"] if p]
+            playlists += [{"id": p["id"], "title": p["name"],
+                           "image": (p.get("images") or [{}])[-1].get("url")}
+                          for p in page["items"] if p]
             page = self.sp.next(page) if page["next"] else None
         return playlists
 

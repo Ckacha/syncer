@@ -16,7 +16,6 @@
         {% endif %}
       </div>
       <progress class="progress" value="{{ scanned }}" max="{{ rows | length or 1 }}">{{ scanned }} / {{ rows | length }}</progress>
-      {% if scanned < rows | length %}<p class="fine" style="margin:0">{{ d.cost_note }}</p>{% endif %}
       <div class="stats">
         <span class="pill ok">{{ counts.auto }} auto-add</span>
         <span class="pill warn">{{ counts.review }} review</span>

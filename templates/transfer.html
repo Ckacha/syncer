@@ -1,37 +1,80 @@
 {% extends "base.html" %}
 {% block title %}Transfer · Syncer{% endblock %}
 {% block content %}
-  {% if not d %}
-    <h1>Transfer</h1>
-    <section>
-      {% for option in directions %}
-        <a class="card direction" href="/transfer?dir={{ option.slug }}">
-          {{ option.source }} <span class="arrow">&rarr;</span> {{ option.dest }}
-        </a>
+  {% set other = "yt2sp" if d.slug == "sp2yt" else "sp2yt" %}
+  <section class="dir-switch" id="dir-switch">
+    <div class="dir-side">
+      <span class="fine">From</span>
+      <div class="dir-mover" data-side="a"><img src="{{ url_for('static', filename='media/' ~ d.source|lower ~ '.svg') }}" alt=""><strong>{{ d.source }}</strong></div>
+    </div>
+    <a class="button dir-btn" id="dir-btn" href="/transfer?dir={{ other }}" aria-label="Switch direction">&#8644;</a>
+    <div class="dir-side">
+      <span class="fine">To</span>
+      <div class="dir-mover" data-side="b"><img src="{{ url_for('static', filename='media/' ~ d.dest|lower ~ '.svg') }}" alt=""><strong>{{ d.dest }}</strong></div>
+    </div>
+  </section>
+  <h1 class="dir-title" id="dir-title">{{ d.source }} <span class="arrow">&rarr;</span> {{ d.dest }}</h1>
+
+  <section class="card">
+    <form class="inline-form" id="pl-form" action="/transfer/{{ d.slug }}/open">
+      <input name="playlist" id="pl-search" placeholder="Search your playlists or paste a {{ d.source }} link"
+             autocomplete="off" required>
+      <button>Open</button>
+    </form>
+    <ul class="list pl-list" id="pl-list">
+      {% for p in playlists %}
+        <li data-name="{{ p.title | lower }}">
+          <a href="/transfer/{{ d.slug }}/{{ p.id }}">
+            {% if p.image %}<img class="pl-img" src="{{ p.image }}" alt="" loading="lazy" referrerpolicy="no-referrer">
+            {% else %}<span class="pl-img" aria-hidden="true"></span>{% endif %}
+            <span>{{ p.title }}</span>
+          </a>
+        </li>
       {% endfor %}
-    </section>
-  {% else %}
-    <a class="back" href="/transfer">&larr; Back</a>
-    <h1>{{ d.source }} <span class="arrow">&rarr;</span> {{ d.dest }}</h1>
-    <p class="fine">{{ d.cost_note }}</p>
+      <li class="empty" id="pl-empty" {% if playlists %}hidden{% endif %}>{% if playlists %}No matches. Paste a link instead.{% else %}None.{% endif %}</li>
+    </ul>
+  </section>
 
-    <section class="card">
-      <h2>Playlist link</h2>
-      <form class="inline-form" action="/transfer/{{ d.slug }}/open">
-        <input name="playlist" placeholder="{{ d.source }} playlist link" required>
-        <button>Open</button>
-      </form>
-    </section>
+{% endblock %}
+{% block scripts %}
 
-    <section class="card">
-      <h2>Your playlists</h2>
-      <ul class="list">
-        {% for p in playlists %}
-          <li><a href="/transfer/{{ d.slug }}/{{ p.id }}">{{ p.title }}</a></li>
-        {% else %}
-          <li class="empty">None.</li>
-        {% endfor %}
-      </ul>
-    </section>
-  {% endif %}
+<script>
+  (() => {
+    const input = document.getElementById("pl-search");
+    const rows = [...document.querySelectorAll("#pl-list li[data-name]")];
+    const empty = document.getElementById("pl-empty");
+    const looksLikeLink = (v) => /[\/:?=]/.test(v);
+    const visible = () => rows.filter((r) => !r.hidden);
+    input.addEventListener("input", () => {
+      const q = input.value.trim().toLowerCase();
+      const filter = q && !looksLikeLink(q);
+      rows.forEach((r) => { r.hidden = filter && !r.dataset.name.includes(q); });
+      if (rows.length) empty.hidden = visible().length > 0;
+    });
+    document.getElementById("pl-form").addEventListener("submit", (e) => {
+      const v = input.value.trim();
+      const first = visible()[0];
+      if (!looksLikeLink(v) && first) {
+        e.preventDefault();
+        location.href = first.querySelector("a").href;
+      }
+    });
+  })();
+
+  document.getElementById("dir-btn").addEventListener("click", (e) => {
+    e.preventDefault();
+    const href = e.currentTarget.href;
+    const box = document.getElementById("dir-switch");
+    if (box.classList.contains("switching")) return;
+    const [a, b] = box.querySelectorAll(".dir-mover");
+    const dx = b.getBoundingClientRect().left - a.getBoundingClientRect().left;
+    a.style.transform = `translateX(${dx}px)`;
+    b.style.transform = `translateX(${-dx}px)`;
+    box.classList.add("switching");
+    const title = document.getElementById("dir-title");
+    const [src, dst] = [a, b].map((m) => m.querySelector("strong").textContent);
+    title.innerHTML = `${dst} <span class="arrow">&rarr;</span> ${src}`;
+    setTimeout(() => { location.href = href; }, 450);
+  });
+</script>
 {% endblock %}

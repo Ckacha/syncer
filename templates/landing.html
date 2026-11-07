@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% set hide_header = True %}
+{% block main_class %}landing{% endblock %}
+{% block content %}
+  <header class="landing-title">
+    <span class="brand-mark lg" aria-hidden="true"></span>
+    <h1>Syncer</h1>
+  </header>
+
+  <section class="landing-body">
+    <div class="swap" id="swap">
+      <button type="button" class="swap-logo" data-side="a" aria-label="Spotify, click to swap">
+        <img src="{{ url_for('static', filename='media/spotify.svg') }}" alt="">
+        <span>Spotify</span>
+      </button>
+      <span class="swap-arrows" aria-hidden="true">&#8644;</span>
+      <button type="button" class="swap-logo" data-side="b" aria-label="YouTube, click to swap">
+        <img src="{{ url_for('static', filename='media/youtube.svg') }}" alt="">
+        <span>YouTube</span>
+      </button>
+    </div>
+
+    <div class="landing-text">
+      <p class="lede">
+        Copy a playlist from Spotify to YouTube or back! Syncer will check if the songs match before anything gets added,
+        and will keep playlists in sync.*
+      </p>
+      <div class="actions">
+        <a class="button big" href="/home">Try it out</a>
+      </div>
+      <p class="fine">*You need to have a Spotify and Google/YouTube account!</p>
+    </div>
+  </section>
+
+  <p class="landing-foot fine">
+    <button type="button" class="ghost sm" id="chaos">Chaos</button>
+    <span class="sep" aria-hidden="true">||</span>
+    <a href="/privacy">Privacy</a>
+    {% if commit %}<span class="sep" aria-hidden="true">||</span>
+    <a class="commit" href="{{ repo }}/commit/{{ commit }}">Commit #{{ commit[:7] }}</a>{% endif %}
+  </p>
+
+{% endblock %}
+{% block scripts %}
+  <script>
+    (() => {
+      const box = document.getElementById("swap");
+      const [a, b] = box.querySelectorAll(".swap-logo");
+      const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      let swapped = false, chaos = false, lastKind = null;
+
+      const KINDS = ["slide", "orbit", "cross"];
+      function pickKind() {
+        let k;
+        do { k = KINDS[Math.floor(Math.random() * KINDS.length)]; } while (k === lastKind);
+        return (lastKind = k);
+      }
+
+      function frames(kind, from, to, front) {
+        const out = [], steps = 24, r = (to - from) / 2;
+        for (let i = 0; i <= steps; i++) {
+          const t = i / steps, arc = Math.sin(Math.PI * t);
+          let x = from + (to - from) * t, y = 0, scale = 1, opacity = 1;
+          if (kind === "orbit") {
+            x = from + r * (1 - Math.cos(Math.PI * t));
+            y = -r * arc;
+          } else if (kind === "cross") {
+            scale = 1 + (front ? 0.3 : -0.25) * arc;
+            opacity = front ? 1 : 1 - 0.5 * arc;
+            y = (front ? -8 : 8) * arc;
+          }
+          out.push({ transform: `translate(${x.toFixed(2)}px, ${y.toFixed(2)}px) scale(${scale.toFixed(3)})`, opacity });
+        }
+        return out;
+      }
+
+      function place() {
+        const dx = b.offsetLeft - a.offsetLeft;
+        a.style.transform = swapped ? `translateX(${dx}px)` : "";
+        b.style.transform = swapped ? `translateX(${-dx}px)` : "";
+        return dx;
+      }
+
+      function swap() {
+        const dx = b.offsetLeft - a.offsetLeft;
+        const fromA = swapped ? dx : 0;
+        swapped = !swapped;
+        place();
+        box.classList.toggle("swapped", swapped);
+        if (reduce) return;
+        const kind = pickKind();
+        const moves = [[a, fromA, swapped ? dx : 0, true], [b, -fromA, swapped ? -dx : 0, false]];
+        for (const [el, from, to, front] of moves) {
+          if (el.move) el.move.cancel();
+          el.style.zIndex = front ? 2 : 1;
+          el.move = el.animate(frames(kind, from, to, front), {
+            duration: chaos ? 350 : 800,
+            easing: "cubic-bezier(.65, 0, .35, 1)",
+          });
+        }
+      }
+
+      let auto = setTimeout(swap, 5000);
+      box.addEventListener("click", (e) => {
+        if (chaos || !e.target.closest(".swap-logo")) return;
+        clearTimeout(auto);
+        swap();
+      });
+
+      const chaosBtn = document.getElementById("chaos");
+      let chaosTimer = null;
+      chaosBtn.addEventListener("click", () => {
+        chaos = !chaos;
+        clearTimeout(auto);
+        box.classList.toggle("chaos", chaos);
+        chaosBtn.textContent = chaos ? "Stop" : "Chaos";
+        if (chaos) {
+          swap();
+          chaosTimer = setInterval(swap, 400);
+        } else {
+          clearInterval(chaosTimer);
+        }
+      });
+      window.addEventListener("resize", place);
+    })();
+  </script>
+{% endblock %}

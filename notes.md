@@ -7,7 +7,7 @@ gauth - https://console.cloud.google.com
 
 
 Need to do:
-privarcy policy
+privacy policy
     should be at /privacy
 login
     password? 
@@ -18,10 +18,19 @@ imported.html
 better clean/strip links 
 check how to scan/search both english and the base language it is (japanaese, korean, etc)
 proper error handling 
-draw a logo
 more automations 
     maybe more like slackomations or smth   
     physical wiring + clicks and stuff?
+search limit
+    youtube has 10,000
+    spotify has NONE 
+Other apps
+    apple music
+    amazon music
+    itunes store
+    soundcloud
+    tidal
+    deezer
 
 scoring so i dont forget
 - title matches: +4 (+2 if its off by like 1/2 characters)

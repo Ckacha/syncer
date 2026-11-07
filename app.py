@@ -36,7 +36,7 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1) 
 
-OPEN_PATHS = {"/password", "/callback", "/google/callback", "/privacy"}
+OPEN_PATHS = {"/", "/password", "/callback", "/google/callback", "/privacy"}
 
 @app.before_request
 def require_password():
@@ -54,7 +54,7 @@ def password():
         if hmac.compare_digest(request.form.get("password", "").encode(), (APP_PASSWORD or "").encode()):
             session["unlocked"] = True
             session.permanent = True
-            return redirect("/")
+            return redirect("/home")
         flash("Wrong password.")
     return render_template("password.html")
 
@@ -66,27 +66,61 @@ def direction(slug):
         abort(404)
     if not all(connected()):
         flash("Log in to both Spotify and YouTube first.")
-        abort(redirect("/"))
+        abort(redirect("/home"))
     return DIRECTIONS[slug](youtube_client(), spotify_client())
 
 def save_ticks(d, db):
-    """The form lists every scanned row in playlist order, ticked ones are confirmed."""
     keys = request.form.getlist("key")
     ticked = set(request.form.getlist("confirm"))
     store.set_approved(db, {k: k in ticked for k in keys}, d.table)
     return [k for k in keys if k in ticked]
 
+def current_commit():
+    try:
+        out = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                             cwd=os.path.dirname(os.path.abspath(__file__)), timeout=5)
+        return out.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+COMMIT = current_commit()
+
 @app.route("/")
+def landing():
+    return render_template("landing.html", commit=COMMIT,
+                           repo="https://github.com/Ckacha/syncer")
+
+ACCOUNTS = {} 
+
+def account_info(service):
+    if service not in ACCOUNTS:
+        try:
+            if service == "spotify":
+                me = spotify_client().current_user()
+                images = me.get("images") or []
+                ACCOUNTS[service] = {"name": me.get("display_name") or me.get("id"),
+                                     "pic": images[0]["url"] if images else None}
+            else:
+                items = youtube_client().channels().list(part="snippet", mine=True).execute().get("items", [])
+                snip = items[0]["snippet"] if items else {}
+                ACCOUNTS[service] = {"name": snip.get("title"),
+                                     "pic": snip.get("thumbnails", {}).get("default", {}).get("url")}
+        except (SpotifyException, HttpError, OSError, KeyError):
+            return None
+    return ACCOUNTS[service]
+
+@app.route("/home")
 def home():
     spotify, youtube = connected()
-    return render_template("index.html", spotify=spotify, youtube=youtube)
+    return render_template(
+        "index.html", spotify=spotify, youtube=youtube,
+        spotify_acct=account_info("spotify") if spotify else None,
+        youtube_acct=account_info("youtube") if youtube else None,
+    )
 
 @app.route("/transfer")
 def transfer_start():
-    slug = request.args.get("dir")
-    if slug is None:
-        return render_template("transfer.html", d=None, directions=DIRECTIONS.values())
-    d = direction(slug)
+    d = direction(request.args.get("dir", "sp2yt"))
     return render_template("transfer.html", d=d, playlists=d.my_playlists())
 
 @app.route("/transfer/<slug>/open")
@@ -116,7 +150,6 @@ def transfer_review(slug, playlist_id):
         if match:
             row["score"] = match["score"]
             row["bucket"] = matcher.bucket(match["score"])
-            # ticked by default only for auto-adds, after that whatever the user last saved wins
             approved = match.get("approved")
             row["checked"] = bool(row["dst_id"]) and (
                 approved == 1 or (approved is None and row["bucket"] == "auto")
@@ -166,7 +199,7 @@ def transfer_import(slug, playlist_id):
         match = store.get_match(db, key, d.table)
         if match and d.dest_id(match):
             ids.append(d.dest_id(match))
-    ids = list(dict.fromkeys(ids))  # same song twice in the source playlist
+    ids = list(dict.fromkeys(ids))  
     if not ids:
         flash("Nothing ticked, confirm at least one match first.")
         return redirect(f"/transfer/{slug}/{playlist_id}")
@@ -187,7 +220,6 @@ def transfer_import(slug, playlist_id):
     )
 
 def scheduled():
-    """Is something set up to run sync.py on a timer? (Task Scheduler on Windows, cron elsewhere)"""
     if sys.platform == "win32":
         result = subprocess.run(["schtasks", "/Query", "/TN", TASK_NAME], capture_output=True)
         return result.returncode == 0
@@ -208,7 +240,6 @@ def automations_page():
                            max_songs=automations.MAX_SONGS)
 
 def read_rules(form):
-    """The rule fields shared by the add and edit forms. Blank count/days = no limit."""
     def number(name, top):
         raw = (form.get(name) or "").strip()
         return max(1, min(int(raw), top)) if raw.isdigit() else None
@@ -253,7 +284,7 @@ def automations_run(auto_id):
     db = store.connect()
     auto = store.get_automation(db, auto_id)
     if auto:
-        direction(auto["direction"])  # login check
+        direction(auto["direction"]) 
         flash(f"{auto['dest_name']}: {automations.run(auto, youtube_client(), spotify_client(), db)}")
     return redirect("/automations")
 
@@ -275,7 +306,8 @@ def spotify_callback():
     if "error" in request.args:
         abort(400, request.args["error"])
     spotify_oauth().get_access_token(request.args["code"], as_dict=False)
-    return redirect("/")
+    ACCOUNTS.pop("spotify", None)
+    return redirect("/home")
 
 def google_flow(state=None):
     return Flow.from_client_secrets_file(
@@ -299,14 +331,16 @@ def google_callback():
     flow.code_verifier = session.pop("google_verifier", None)
     flow.fetch_token(authorization_response=request.url)
     save_youtube_creds(flow.credentials)
-    return redirect("/")
+    ACCOUNTS.pop("youtube", None)
+    return redirect("/home")
 
 @app.route("/logout/<service>")
 def logout(service):
     path = {"spotify": ".cache", "youtube": "token.json"}.get(service)
     if path and os.path.exists(path):
         os.remove(path)
-    return redirect("/")
+    ACCOUNTS.pop(service, None)
+    return redirect("/home")
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=8888, debug=True)
