@@ -1,22 +1,24 @@
 import hmac
+import json
 import os
 import re
 import secrets
 import subprocess
 import sys
+import time
 import automations
 import lean
 import matcher
 import store
 import auth
 
-from datetime import timedelta
-from flask import Flask, abort, flash, redirect, render_template, request, session
+from datetime import datetime, timedelta
+from flask import Flask, abort, flash, jsonify, redirect, render_template, request, session
 from werkzeug.middleware.proxy_fix import ProxyFix
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.errors import HttpError
 from spotipy.exceptions import SpotifyException
-from transfer import API_ERRORS, DIRECTIONS, error_message, oembed_cover
+from transfer import API_ERRORS, DIRECTIONS, error_message, lookup_stopped, oembed_cover
 
 from auth import (
     GOOGLE_CLIENT_SECRETS_FILE,
@@ -181,6 +183,20 @@ def transfer_open(slug):
         return redirect(f"/transfer?dir={slug}")
     return redirect(f"/transfer/{slug}/{playlist_id}")
 
+def review_row(d, db, item):
+    match = store.get_match(db, d.key(item), d.table)
+    row = d.row(item, match)
+    row["scanned"] = match is not None
+    if match:
+        row["score"] = match["score"]
+        row["version"] = ", ".join(sorted(matcher.excluded(match))) 
+        row["bucket"] = "skip" if row["version"] else matcher.bucket(match["score"])
+        approved = match.get("approved")
+        row["checked"] = bool(row["dst_id"]) and not row["version"] and (
+            approved == 1 or (approved is None and row["bucket"] == "auto")
+        )
+    return row
+
 @app.route("/transfer/<slug>/<playlist_id>")
 def transfer_review(slug, playlist_id):
     d, db = direction(slug), store.connect()
@@ -191,24 +207,11 @@ def transfer_review(slug, playlist_id):
         return redirect(f"/transfer?dir={slug}")
     title, items = loaded
 
-    rows = []
-    for item in items:
-        match = store.get_match(db, d.key(item), d.table)
-        row = d.row(item, match)
-        row["scanned"] = match is not None
-        if match:
-            row["score"] = match["score"]
-            row["version"] = ", ".join(sorted(matcher.excluded(match)))  # e.g. "cover", "acoustic"
-            row["bucket"] = "skip" if row["version"] else matcher.bucket(match["score"])
-            approved = match.get("approved")
-            # other versions start unticked even if an old tick was saved (ticks get saved on every scan click)
-            row["checked"] = bool(row["dst_id"]) and not row["version"] and (
-                approved == 1 or (approved is None and row["bucket"] == "auto")
-            )
-        rows.append(row)
+    rows = [review_row(d, db, item) for item in items]
 
     scanned = [r for r in rows if r["scanned"]]
     counts = {b: sum(r["bucket"] == b for r in scanned) for b in ("auto", "review", "skip")}
+    counts["pending"] = len(rows) - len(scanned)
     ticked = sum(r["checked"] for r in scanned)
     return render_template(
         "preview.html", d=d, playlist_id=playlist_id, title=title, rows=rows,
@@ -277,7 +280,7 @@ def quota_test():
         title, items = loaded
         need = [t for t in items if store.get_match(db, t["track_id"], "reverse_matches") is None]
         reuse = sum(lean.reuse_reverse_match(db, t) is not None for t in need)
-        search = 101  #
+        search = 101  
         rows += [
             (f"Scan the {len(need)} unscanned songs", len(need) * search, (len(need) - reuse) * search,
              "counted, not run", f"{reuse} already matched YouTube → Spotify, no search needed"),
@@ -310,13 +313,22 @@ def transfer_scan(slug, playlist_id):
     loaded = d.load(playlist_id)
     if loaded is None:
         return redirect(f"/transfer/{slug}/{playlist_id}")
-    todo = [i for i in loaded[1] if store.get_match(db, d.key(i), d.table) is None][:BATCH_SIZE[d.slug]]
-    for item in todo:
+    try:
+        count = max(1, min(int(request.form.get("count", "")), BATCH_SIZE[d.slug]))
+    except ValueError:
+        count = BATCH_SIZE[d.slug]
+    unscanned = [i for i in loaded[1] if store.get_match(db, d.key(i), d.table) is None]
+    done, stopped = 0, False
+    for item in unscanned[:count]:
         try:
             store.save_match(db, d.find(item), d.table)
+            done += 1
         except API_ERRORS as e:
-            flash(f"Song lookup stopped: {error_message(e)}")
+            flash(lookup_stopped(e))
+            stopped = True
             break
+    if request.headers.get("X-Scan") == "1":
+        return jsonify(done=done, left=len(unscanned) - done, stopped=stopped)
     return redirect(f"/transfer/{slug}/{playlist_id}")
 
 @app.route("/transfer/<slug>/<playlist_id>/rescan/<key>", methods=["POST"])
@@ -325,13 +337,22 @@ def transfer_rescan_one(slug, playlist_id, key):
     save_ticks(d, db)
     loaded = d.load(playlist_id)
     item = next((i for i in (loaded[1] if loaded else []) if d.key(i) == key), None)
+    in_page = request.headers.get("X-Scan") == "1"  
     if item is None:
+        if in_page:
+            return jsonify(error="That song isn't in this playlist anymore.")
         flash("That song isn't in this playlist anymore.")
         return redirect(f"/transfer/{slug}/{playlist_id}")
+    error = None
     try:
         store.save_match(db, d.find(item), d.table)
     except API_ERRORS as e:
-        flash(f"Song lookup stopped: {error_message(e)}")
+        error = lookup_stopped(e)
+    if in_page:
+        html = render_template("_song_row.html", r=review_row(d, db, item), d=d, playlist_id=playlist_id)
+        return jsonify(html=html, error=error)
+    if error:
+        flash(error)
     return redirect(f"/transfer/{slug}/{playlist_id}#row-{key}")
 
 @app.route("/transfer/<slug>/<playlist_id>/rescan", methods=["POST"])
@@ -374,41 +395,210 @@ def scheduled():
     result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
     return "sync.py" in result.stdout
 
+MY_PLAYLISTS = {}  
+MY_PLAYLISTS_SECONDS = 600
+
+@app.route("/my-playlists.json")
+def my_playlists_json():
+    me = uid()
+    hit = MY_PLAYLISTS.get(me)
+    if hit and time.time() - hit[0] < MY_PLAYLISTS_SECONDS and not request.args.get("fresh"):
+        return jsonify(hit[1])
+    playlists, problems = [], []
+    for service in automations.SERVICES:
+        try:
+            if service == "YouTube":
+                found = DIRECTIONS["yt2sp"](youtube_client(me), None).my_playlists()
+            else:
+                found = DIRECTIONS["sp2yt"](None, spotify_client(me)).my_playlists()
+        except NotLoggedIn:
+            problems.append(f"Log into {service} on Home to see your {service} playlists.")
+            continue
+        except API_ERRORS as e:
+            problems.append(f"{service}: {error_message(e)}")
+            continue
+        playlists += [{"service": service, "id": p["id"], "title": p["title"], "image": p.get("image"),
+                       "owner": p.get("owner"), "url": automations.source_url(service, p["id"])} for p in found]
+    result = {"playlists": playlists, "problems": problems}
+    if not problems:
+        MY_PLAYLISTS[me] = (time.time(), result)
+    return jsonify(result)
+
 @app.route("/automations")
 def automations_page():
     db = store.connect()
     autos = store.automations(db, uid())
     for a in autos:
-        d = DIRECTIONS[a["direction"]]
-        a["arrow"] = f"{d.source} → {d.dest}"
-        a["dest_url"] = d.playlist_url(a["dest_id"]) if a["dest_id"] else None
-        a["rules"] = automations.describe(a)
-    youtube_acct = account_info("youtube") if load_youtube_creds(uid()) else None
-    return render_template("automations.html", autos=autos, youtube_acct=youtube_acct, directions=DIRECTIONS.values(),
-                           scheduled=scheduled(), task_name=TASK_NAME, windows=sys.platform == "win32", picks=automations.PICKS,
-                           max_songs=automations.MAX_SONGS)
+        a["sources"] = store.sources(db, a["id"])
+        for src in a["sources"]:
+            src["url"] = automations.source_url(src["service"], src["playlist_id"])
+        a["dest_service"] = a.get("dest_service") or "Spotify"
+        a["dest_url"] = automations.source_url(a["dest_service"], a["dest_id"]) if a["dest_id"] else None
+        if a.get("dedupe_id"):
+            a["dedupe_url"] = automations.source_url(a["dedupe_service"], a["dedupe_id"])
+        a["trigger_text"] = automations.TRIGGERS.get(a.get("trigger") or "any")
+        a["trigger_url"] = automations.source_url(a["trigger_service"], a["trigger_id"]) if a.get("trigger_id") else None
+        a["compare_url"] = automations.source_url(a["compare_service"], a["compare_id"]) if a.get("compare_id") else None
+        a["next_run"] = next_run(a)
+        a["unchecked"] = json.loads(a.get("unchecked") or "[]")
+    spotify, youtube = connected()
+    logins = [(service, acct) for service, on in (("YouTube", youtube), ("Spotify", spotify))
+              if on and (acct := account_info(service.lower()))]  
+    return render_template("automations.html", autos=autos, logins=logins,
+                           scheduled=scheduled(), task_name=TASK_NAME, windows=sys.platform == "win32", **block_options())
+
+def block_options():
+    return {"picks": automations.PICKS, "max_songs": automations.MAX_SONGS, "triggers": automations.TRIGGERS,
+            "compares": automations.COMPARES,
+            "units": automations.UNITS, "max_every": automations.MAX_EVERY,
+            "services": automations.SERVICES, "max_sources": MAX_SOURCES}
+
+MAX_SOURCES = 10
+
+def next_run(a):
+    if a.get("paused"):
+        return None
+    if a.get("every_unit") == "never":
+        return "only when you press Run now"
+    if a.get("every_unit") == "always":
+        return "within 5 minutes"
+    if not a.get("last_ts"):
+        return "within the hour"
+    when = datetime.fromtimestamp(a["last_ts"] + automations.interval(a))
+    return "within the hour" if when <= datetime.now() else f"{when:%Y-%m-%d %H}:00 or so"
 
 def read_rules(form):
     def number(name, top):
         raw = (form.get(name) or "").strip()
         return max(1, min(int(raw), top)) if raw.isdigit() else None
-    pick = form.get("pick") if form.get("pick") in automations.PICKS else "newest"
-    return number("count", automations.MAX_SONGS), number("days", 3650), pick
+    unit = form.get("every_unit") if form.get("every_unit") in automations.UNITS else "hours"
+    return {
+        "count": number("count", automations.MAX_SONGS),
+        "days": number("days", 3650),
+        "pick": form.get("pick") if form.get("pick") in automations.PICKS else "newest",
+        "every_n": number("every_n", automations.MAX_EVERY.get(unit, 1)) or 1,
+        "every_unit": unit,
+        "trigger": form.get("trigger") if form.get("trigger") in automations.TRIGGERS else "any",
+        "keep_old": int(form.get("keep_old") == "1"),
+        "note": (form.get("note") or "").strip()[:300] or None,
+    }
+
+def read_name(form, fallback):
+    return (form.get("name") or "").strip()[:80] or fallback
+
+def read_sources(form, known=()):
+    titles = {(s["service"], s["playlist_id"]): s["title"] for s in known}
+    found = []
+    for link in [l for l in form.getlist("source") if l.strip()][:MAX_SOURCES]:
+        every = re.fullmatch(r"\s*all my (spotify |youtube )?playlists\s*", link, re.I)
+        if every:  
+            for service in ([every.group(1).strip().title().replace("Youtube", "YouTube")] if every.group(1) else automations.SERVICES):
+                if (service, automations.ALL) not in [(s, p) for s, p, _ in found]:
+                    found.append((service, automations.ALL, "A" + automations.all_label(service)[1:]))
+            continue
+        service, playlist_id = automations.service_of(link)
+        if not playlist_id:
+            flash(f"That doesn't look like a Spotify or YouTube playlist link: {link[:80]}")
+            return None
+        if (service, playlist_id) in [(s, p) for s, p, _ in found]:
+            continue
+        title = titles.get((service, playlist_id))
+        if title is None:
+            loaded = automations.reader(service, youtube_client(uid()), spotify_client(uid())).load(playlist_id)
+            if loaded is None:
+                flash(f"Couldn't open that {service} playlist. Check the link, and that it isn't private: {link[:80]}")
+                return None
+            title = loaded[0]
+        found.append((service, playlist_id, title))
+    return found
+
+def read_blocks(form, known=()):
+    copies = form.get("copies") == "1"
+    sources = read_sources(form, known) if copies else []
+    if sources is None:
+        return None
+    if copies and not sources:
+        flash("A Copy block needs at least one Take block with a playlist in it.")
+        return None
+    dedupe = {"dedupe_service": None, "dedupe_id": None, "dedupe_title": None}
+    if (form.get("dedupe_source") or "").strip():
+        found = read_sources(_OneLink(form["dedupe_source"]), known)
+        if found is None:
+            return None
+        dedupe = dict(zip(("dedupe_service", "dedupe_id", "dedupe_title"), found[0]))
+    if not copies and not dedupe["dedupe_id"]:
+        flash("An automation needs a Copy block or a Clean block.")
+        return None
+    dedupe.update(trigger_service=None, trigger_id=None, trigger_title=None)
+    if form.get("trigger") in ("added", "removed", "changed"):
+        link = (form.get("trigger_source") or "").strip()
+        if not link:
+            flash("Pick the playlist the Trigger block watches.")
+            return None
+        if re.fullmatch(r"\s*all my (spotify |youtube )?playlists\s*", link, re.I):
+            flash("The Trigger block watches one playlist. Pick a single playlist for it.")
+            return None
+        found = read_sources(_OneLink(link), known)
+        if found is None:
+            return None
+        dedupe.update(zip(("trigger_service", "trigger_id", "trigger_title"), found[0]))
+    dedupe.update(compare_mode=None, compare_service=None, compare_id=None, compare_title=None)
+    if copies and form.get("compare_mode") in automations.COMPARES:
+        link = (form.get("compare_source") or "").strip()
+        if not link:
+            flash("Pick the playlist the Compare block compares with.")
+            return None
+        if re.fullmatch(r"\s*all my (spotify |youtube )?playlists\s*", link, re.I):
+            flash("The Compare block compares with one playlist. Pick a single playlist for it.")
+            return None
+        found = read_sources(_OneLink(link), known)
+        if found is None:
+            return None
+        dedupe.update(compare_mode=form["compare_mode"],
+                      **dict(zip(("compare_service", "compare_id", "compare_title"), found[0])))
+    if form.get("every_unit") == "always" and any(p == automations.ALL for _, p, _ in sources):
+        flash('"All my playlists" can run every hour at most due to rate limits. Pick "hours" or "days" in the start block.')
+        return None
+    dest = {"dest_existing": 0}
+    if copies and form.get("dest_mode") == "existing":
+        if not (form.get("dest_link") or "").strip():
+            flash("Pick the playlist the Copy block should copy into.")
+            return None
+        found = read_sources(_OneLink(form["dest_link"]), known)
+        if found is None:
+            return None
+        service, playlist_id, title = found[0]
+        if (service, playlist_id) in [(s, p) for s, p, _ in sources]:
+            flash("The Copy playlist can't also be one of the Take playlists.")
+            return None
+        if (service, playlist_id) == (dedupe["compare_service"], dedupe["compare_id"]):
+            flash("The Compare playlist can't be the playlist Copy copies into.")
+            return None
+        dest = {"dest_existing": 1, "dest_service": service, "dest_id": playlist_id, "dest_name": title}
+    return copies, sources, dedupe, dest
+
+class _OneLink:
+    def __init__(self, link):
+        self.link = link
+    def getlist(self, _):
+        return [self.link]
 
 @app.route("/automations", methods=["POST"])
 def automations_add():
-    d, db = direction(request.form["direction"]), store.connect()
-    source_id = d.playlist_id_from(request.form.get("source", ""))
-    loaded = d.load(source_id) if source_id else None
-    if loaded is None:
-        flash(f"Couldn't open that {d.source} playlist. Check the link, and that it isn't private.")
+    db = store.connect()
+    blocks = read_blocks(request.form)
+    if blocks is None:
         return redirect("/automations")
-    count, days, pick = read_rules(request.form)
-    rules = automations.describe({"count": count, "days": days, "pick": pick})
-    dest_name = request.form.get("dest_name", "").strip() or f"{loaded[0]} ({rules})"
-    claim("google", google_account_id)  
-    store.add_automation(db, uid(), d.slug, source_id, loaded[0], dest_name, count, days, pick)
-    flash(f'Added. Click "Run now" to create "{dest_name}" and fill it.')
+    copies, sources, dedupe, dest = blocks
+    rules = read_rules(request.form)
+    titles = " + ".join(t for _, _, t in sources) or f"Clean {dedupe['dedupe_title']}"
+    if not dest["dest_existing"]:
+        dest["dest_service"] = request.form.get("dest_service") if request.form.get("dest_service") in automations.SERVICES else "Spotify"
+        dest["dest_name"] = request.form.get("dest_name", "").strip() or f"{titles} ({automations.describe(rules)})"[:100]
+    name = read_name(request.form, titles[:80])
+    claim("google", google_account_id)
+    store.add_automation(db, uid(), sources, copies=int(copies), name=name, **dest, **dedupe, **rules)
+    flash(f'Added "{name}". Click "Run now" to run it straight away.')
     return redirect("/automations")
 
 @app.route("/automations/<int:auto_id>/edit", methods=["GET", "POST"])
@@ -417,27 +607,68 @@ def automations_edit(auto_id):
     auto = store.get_automation(db, auto_id, uid())
     if not auto:
         return redirect("/automations")
+    srcs = store.sources(db, auto_id)
     if request.method == "POST":
-        count, days, pick = read_rules(request.form)
-        dest_name = request.form.get("dest_name", "").strip() or auto["dest_name"]
-        store.update_automation(db, auto_id, count=count, days=days, pick=pick, dest_name=dest_name)
+        known = srcs + ([{"service": auto["dedupe_service"], "playlist_id": auto["dedupe_id"], "title": auto["dedupe_title"]}]
+                        if auto.get("dedupe_id") else []) \
+                     + ([{"service": auto["dest_service"], "playlist_id": auto["dest_id"], "title": auto["dest_name"]}]
+                        if auto.get("dest_existing") else []) \
+                     + ([{"service": auto["trigger_service"], "playlist_id": auto["trigger_id"], "title": auto["trigger_title"]}]
+                        if auto.get("trigger_id") else []) \
+                     + ([{"service": auto["compare_service"], "playlist_id": auto["compare_id"], "title": auto["compare_title"]}]
+                        if auto.get("compare_id") else [])
+        blocks = read_blocks(request.form, known=known)
+        if blocks is None:
+            return redirect(f"/automations/{auto_id}/edit")
+        copies, sources, dedupe, dest = blocks
+        if (dedupe["trigger_service"], dedupe["trigger_id"]) != (auto.get("trigger_service"), auto.get("trigger_id")):
+            dedupe["trigger_keys"] = None 
+        if dest["dest_existing"]:
+            if (dest["dest_service"], dest["dest_id"]) != (auto["dest_service"], auto["dest_id"]) or not auto.get("dest_existing"):
+                dest["sent_ids"] = "[]"  
+            dest_name = dest["dest_name"]
+        else:
+            dest_name = request.form.get("dest_name", "").strip() or auto["dest_name"]
+            dest["dest_name"] = dest_name
+            if auto.get("dest_existing"): 
+                dest.update(dest_id=None, sent_ids="[]")
+            if not dest.get("dest_id", auto["dest_id"]) and request.form.get("dest_service") in automations.SERVICES:
+                dest["dest_service"] = request.form["dest_service"]
+        store.update_automation(db, auto_id, copies=int(copies),
+                                name=read_name(request.form, auto.get("name") or auto["source_title"]),
+                                **dest, **dedupe, **read_rules(request.form))
+        if sources:
+            store.set_sources(db, auto_id, sources)
         msg = "Saved. The playlist changes on the next run."
-        if dest_name != auto["dest_name"] and auto["dest_id"]:
+        if copies and not dest["dest_existing"] and not auto.get("dest_existing") and dest_name != auto["dest_name"] and auto["dest_id"]:
             msg += " The new name only applies if the playlist gets recreated, rename the existing one in the app."
         flash(msg)
         return redirect("/automations")
-    return render_template("automation_edit.html", a=auto, picks=automations.PICKS,
-                           max_songs=automations.MAX_SONGS)
+    for src in srcs:
+        src["url"] = automations.source_url(src["service"], src["playlist_id"])
+    if auto.get("dedupe_id"):
+        auto["dedupe_url"] = automations.source_url(auto["dedupe_service"], auto["dedupe_id"])
+    if auto.get("dest_id"):
+        auto["dest_url"] = automations.source_url(auto["dest_service"], auto["dest_id"])
+    if auto.get("trigger_id"):
+        auto["trigger_url"] = automations.source_url(auto["trigger_service"], auto["trigger_id"])
+    if auto.get("compare_id"):
+        auto["compare_url"] = automations.source_url(auto["compare_service"], auto["compare_id"])
+    return render_template("automation_edit.html", a=auto, sources=srcs, **block_options())
 
 @app.route("/automations/<int:auto_id>/run", methods=["POST"])
 def automations_run(auto_id):
     db = store.connect()
     auto = store.get_automation(db, auto_id, uid())
     if auto:
-        direction(auto["direction"])
-        flash(f"{auto['dest_name']}: {automations.run(auto, youtube_client(uid()), spotify_client(uid()), db, force=True)}")
+        result = automations.run(auto, youtube_client(uid()), spotify_client(uid()), db, force=True)
+        flash(f"{auto.get('name') or auto['dest_name']}: {result}")
+        unchecked = json.loads(store.get_automation(db, auto_id, uid()).get("unchecked") or "[]")
+        if unchecked:
+            flash("You haven't checked " + ", ".join(f"{u['count']} song{'s' if u['count'] != 1 else ''} in {u['title']}" for u in unchecked)
+                  + " yet. Open the review link on the automation to check the matches.")
     return redirect("/automations")
-
+ 
 @app.route("/automations/<int:auto_id>/pause", methods=["POST"])
 def automations_pause(auto_id):
     db = store.connect()

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static', filename='css/transfer.css') }}">{% endblock %}
 {% block title %}Transfer{% endblock %}
 {% block content %}
   {% set other = "yt2sp" if d.slug == "sp2yt" else "sp2yt" %}
@@ -56,7 +57,6 @@
       const q = input.value.trim().toLowerCase();
       const filter = q && !looksLikeLink(q);
       rows.forEach((r) => { r.hidden = filter && !r.dataset.name.includes(q); });
-      // hide an owner's heading when none of their playlists match
       document.querySelectorAll(".pl-group").forEach((g) => {
         g.hidden = !g.querySelector("li[data-name]:not([hidden])");
       });

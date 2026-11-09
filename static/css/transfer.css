@@ -1,0 +1,102 @@
+.pl-list { margin-top: 14px; max-height: 60vh; overflow-y: auto; }
+.pl-list a { display: flex; align-items: center; gap: 12px; }
+.pl-group + .pl-group { margin-top: 16px; }
+.pl-owner {
+  position: sticky; top: 0; z-index: 1;
+  margin: 0; padding: 6px 4px;
+  font-size: 0.95rem; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.pl-owner .fine { margin-left: 6px; }
+.pl-img {
+  width: 40px; height: 40px; flex: none; object-fit: cover;
+  border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--sunken);
+}
+
+.progress {
+  display: block;
+  width: 100%;
+  height: 6px;
+  margin: 12px 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--sunken);
+  overflow: hidden;
+  appearance: none;
+}
+.progress::-webkit-progress-bar { background: var(--sunken); }
+.progress::-webkit-progress-value { background: var(--accent); }
+.progress::-moz-progress-bar { background: var(--accent); }
+.stats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+.scan-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.scan-controls [hidden] { display: none; }
+.scan-next { display: flex; align-items: center; gap: 6px; font-size: 0.9rem; color: var(--muted); }
+.scan-next input { width: 5em; padding: 5px 8px; }
+#scan-status { margin: 0 0 4px; }
+
+.tabs .tab {
+  min-width: 0;
+  padding: 4px 12px;
+  font-family: inherit;
+  font-size: 0.8rem;
+  text-transform: none;
+  letter-spacing: 0;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  box-shadow: none;
+  color: var(--muted);
+  background: var(--sunken);
+}
+.tabs .tab:hover { transform: none; box-shadow: none; border-color: var(--border); }
+.tabs .tab:active { transform: none; }
+.tabs .tab.ok { background: var(--ok-soft); color: var(--ok); }
+.tabs .tab.warn { background: var(--warn-soft); color: var(--warn); }
+.tabs .tab.bad { background: var(--bad-soft); color: var(--bad); }
+.tabs .tab[aria-selected="true"] { border-color: currentColor; box-shadow: 2px 2px 0 currentColor; font-weight: 600; }
+
+#songs[data-show="auto"] tr[id^="row-"]:not(.auto),
+#songs[data-show="review"] tr[id^="row-"]:not(.review),
+#songs[data-show="skip"] tr[id^="row-"]:not(.skip),
+#songs[data-show="pending"] tr[id^="row-"]:not(.pending) { display: none; }
+
+.importbar { position: sticky; top: 0; z-index: 5; }
+.dir-switch { display: flex; align-items: flex-end; justify-content: center; gap: 28px; margin: 8px 0 18px; }
+.dir-side { display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 96px; }
+.dir-mover {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  transition: transform 0.45s cubic-bezier(.65, 0, .35, 1);
+}
+.dir-mover img {
+  width: 56px; height: 56px; padding: 14px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r); box-shadow: 3px 3px 0 var(--line);
+}
+.dir-btn { font-size: 1.4rem; padding: 8px 16px; margin-bottom: 34px; transition: transform 0.45s ease; }
+.dir-switch.switching .dir-btn { transform: rotate(180deg); }
+.dir-title { text-align: center; }
+
+@media (prefers-reduced-motion: reduce) { .dir-mover, .dir-btn { transition: none; } }
+.song { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.song > div { min-width: 0; }
+.cover {
+  width: 44px; height: 44px; flex: none; overflow: hidden;
+  border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--sunken);
+}
+.cover img { display: block; width: 100%; height: 100%; object-fit: cover; }  
+
+button.rescan {
+  min-width: 0; margin-left: 6px; padding: 0 6px;
+  font-size: 0.9rem; line-height: 1.5; letter-spacing: 0;
+  background: transparent; color: var(--muted);
+  border: 1px solid var(--border); box-shadow: none;
+}
+button.rescan:hover { color: var(--text); border-color: var(--line); transform: none; box-shadow: none; }
+button.rescan:active { transform: translateY(1px); box-shadow: none; }
+td.score { white-space: nowrap; }
+
+#songs tr.just-rescanned { display: table-row !important; animation: rescanned 1.2s ease-out; }
+@keyframes rescanned { from { background: color-mix(in srgb, var(--accent) 18%, transparent); } }
+@media (prefers-reduced-motion: reduce) { #songs tr.just-rescanned { animation: none; } }
+button.rescan.spinning { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.rescan-error { display: block; margin-top: 4px; color: var(--bad); white-space: normal; max-width: 18em; }

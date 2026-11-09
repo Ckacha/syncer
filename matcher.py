@@ -10,10 +10,11 @@ NOISE_WORDS = (
     "visualizer", "visualiser", "music video", "explicit", "clean", "color coded",
 )
 CHANNEL_NOISE = re.compile(r"vevo|official|music|records|\s-\stopic$", re.I)
-FEAT = re.compile(r"\s*[\(\[]?\s*\b(?:ft|feat|featuring)\b\.?\s+[^\)\]]*[\)\]]?", re.I)
+FEAT = re.compile(r"\s*[\(\[]?\s*\b(?:ft|feat|featuring)\b\.?\s+(?:[^\)\]/|]|/(?!\s))*[\)\]]?", re.I)
 DASHES = re.compile("\\s+[-\u2013\u2014]\\s+")  
 SLASH = re.compile(r"\s+/\s*|\s*/\s+") 
 SPOTIFY_LINK = re.compile(r"open\.spotify\.com/(?:intl-[\w-]+/)?(track|album)/([A-Za-z0-9]{22})")
+QUOTED = re.compile(r'[“"]([^”"]{2,})[”"]')
 JP_TITLE = re.compile(r"[『「]([^』」]+)[』」]")  #need to find more seperating symbols aasdpioasdpasd
 CHANNEL_NUMBER = re.compile(r"\s*[\(（]\d+[\)）]\s*$")
 
@@ -168,7 +169,7 @@ def parse_video(title, channel):
             parts = SLASH.split(cleaned, maxsplit=1)
             if len(parts) == 2:
                 cleaned = parts[0]
-                extra = [a.strip() for a in parts[1].split(",")]
+                extra = [a.strip() for a in parts[1].split(",") if not QUOTED.search(a)]
         artists += [channel_artist] + extra
 
     names = [cleaned]
@@ -178,6 +179,8 @@ def parse_video(title, channel):
         names.insert(0, jp.group(1).strip())
         if before and not is_topic:
             artists.insert(0, before)
+    quoted = [q.strip() for q in QUOTED.findall(unicodedata.normalize("NFKC", title))]
+    names[1 if jp else 0:1 if jp else 0] = quoted
     main = re.sub(r"\s*\([^)]*\)", "", cleaned).strip()
     if not main.isascii():
         names += [main] + [p.strip() for p in re.findall(r"\(([^)]*)\)", cleaned)]
@@ -277,11 +280,13 @@ def loose(text):
     t = re.sub(r"(?<=[^aeiou])u", "", t) 
     return re.sub(r"(.)\1+", r"\1", t)
 
-JP_LIVE = re.compile(r"[\(\[【][^\)\]】]*(?:実演|ライブ)[^\)\]】]*[\)\]】]") 
+JP_LIVE = re.compile(r"[\(\[【][^\)\]】]*(?:実演|ライブ)[^\)\]】]*[\)\]】]")
+#yup this is specifically for the first take specific songs
+FIRST_TAKE = re.compile(r"\bthe\s*first\s*take\b", re.I)
 
 def versions(title):
     tags = {tag for tag, pattern in VERSION_TAGS.items() if pattern.search(title)}
-    if JP_LIVE.search(_nfkc(title)):
+    if JP_LIVE.search(_nfkc(title)) or FIRST_TAKE.search(_nfkc(title)):
         tags.add("live")
     return tags
 
@@ -307,7 +312,8 @@ def score(video, names, artists, is_topic, track, artist_hit=False):
     if version_mismatch(video["title"], track["name"]):
         points -= VERSION_PENALTY
 
-    artist_match = artist_hit or artists_overlap(artists, [a["name"] for a in track["artists"]])
+    artist_match = artist_hit or artists_overlap(artists, [a["name"] for a in track["artists"]]) \
+        or (title > 0 and guest_hit(video, track)) 
     if artist_match:
         points += 3
 
@@ -336,11 +342,11 @@ def guest_hit(video, track):
 
 def better(video, s, track, best_score, best):
     return s > best_score or (s == best_score and guest_hit(video, track) and not guest_hit(video, best))
-VIDEO_FEAT = re.compile(r"\b(?:ft|feat|featuring)\b\.?\s+([^\)\]】|]+)", re.I)
+VIDEO_FEAT = re.compile(r"\b(?:ft|feat|featuring)\b\.?\s+((?:[^\)\]】|/(]|/(?!\s))+)", re.I)
 
 def video_guests(title):
-    m = VIDEO_FEAT.search(_nfkc(title))
-    return [g for g in ARTIST_SPLIT.split(m.group(1).strip()) if g] if m else []
+    found = VIDEO_FEAT.findall(_nfkc(title)) 
+    return list(dict.fromkeys(g for part in found for g in ARTIST_SPLIT.split(part.strip()) if g))
 
 TOPIC_OTHER_ARTIST = 4
 ARTIST_SPLIT = re.compile(r"\s*(?:,|、|&|＆|×|\bx\b|\band\b|\bwith\b|\bfeat\.?|\bft\.?|\bvs\.?)\s*", re.I)
@@ -358,7 +364,7 @@ def artists_overlap(yt_artists, sp_artists):
         out = set()
         for n in names:
             for piece in [n] + ARTIST_SPLIT.split(n):
-                for form in (normalize(piece), normalize(romaji(normalize(piece)))):  # にほしか ~ nihosika
+                for form in (normalize(piece), normalize(romaji(normalize(piece)))): 
                     if form:
                         out.add(form.replace(" ", ""))
         return out
@@ -397,7 +403,9 @@ def find_match(sp, video):
     romanized = [(f"{names[0]} {romaji(a)}", False) for a in artists[:2]
                  if names and not a.isascii() and romaji(a) != a]
     plain = [(n, False) for n in names[:2]]
-    queries = queries[:2] + romanized + plain + queries[2:]
+    guests = [(f'track:"{names[0]}" artist:"{g}"', True) for g in video_guests(video["title"])
+              if names and g.isascii() and g not in artists[:2]][:2]
+    queries = queries[:2] + guests + romanized + plain + queries[2:]
     queries = list(dict.fromkeys(queries))[:MAX_SEARCHES]
 
     for q, artist_hit in queries:

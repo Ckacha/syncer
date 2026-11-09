@@ -1,16 +1,15 @@
 {% extends "base.html" %}
-{% from "_rules.html" import rule_fields %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static', filename='css/automations.css') }}">{% endblock %}
+{% from "_rules.html" import builder with context %}
 {% block title %}Edit automation{% endblock %}
 {% block content %}
   <a class="back" href="/automations">&larr; Back</a>
-  <h1>{{ a.source_title }}</h1>
+  <h1>{{ a.name or a.source_title }}</h1>
 
-  <form method="post" class="card" style="margin-top:16px">
-    {{ rule_fields(a, picks, max_songs) }}
-    <div class="field">
-      <label for="dest">Playlist name</label>
-      <input id="dest" name="dest_name" value="{{ a.dest_name }}">
-    </div>
-    <div class="actions" style="margin-top:18px"><button>Save</button></div>
+  <form method="post" class="script builder" style="margin-top:16px">
+    {{ builder(a, sources) }}
+    <div class="script-actions"><button class="blk-btn go">&#10003; Save</button></div>
   </form>
+  <p class="build-help">Drag or press &times; on the relevant blocks in-between the start and end.</p>
+  <script src="/static/blocks.js" defer></script>
 {% endblock %}

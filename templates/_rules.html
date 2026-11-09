@@ -1,17 +1,172 @@
-{% macro rule_fields(a, picks, max_songs) %}
-  <p class="rule">
-    Keep the
-    <select name="pick">
-      {% for p in picks %}<option value="{{ p }}" {% if (a.pick or "newest") == p %}selected{% endif %}>{{ p }}</option>{% endfor %}
+{% set BLOCKS = {
+  "take":    ("Take",    "songs from a playlist (Spotify or YouTube)"),
+  "trigger": ("Trigger", "only run when songs get added to or removed from a playlist"),
+  "keep":    ("Limit",   "keep only the newest or oldest few songs"),
+  "days":    ("Recent",  "only songs added in the last few days"),
+  "compare": ("Compare", "only songs that are, or aren't, in another playlist"),
+  "keep_old":("Keep",    "never take songs out, even if they leave the source"),
+  "copy":    ("Copy",    "put the songs into a new playlist, or one you already have"),
+  "dedupe":  ("Clean",   "remove songs that are in a playlist twice"),
+} %}
+
+{% macro tag(kind) %}<small class="blk-tag">{{ BLOCKS[kind][0] if kind in BLOCKS else kind }}</small>{% endmacro %}
+{% macro optional(name, on, cls) %}
+  <div class="blk {{ cls }}" data-block="{{ name }}" {% if not on %}hidden{% endif %}>
+    {{ tag(name) }}
+    {{ caller() }}
+    <button type="button" class="blk-x" aria-label="Remove this block" title="Remove this block">&times;</button>
+  </div>
+{% endmacro %}
+
+{% macro link_input(name, value, required=False, title=None) %}
+  <input class="slot wide" value="{{ title or value or '' }}" data-picker autocomplete="off"
+         placeholder="pick one of your playlists, or paste a link" aria-label="Playlist" {% if required %}required{% endif %}>
+  <input type="hidden" name="{{ name }}" value="{{ value or '' }}" data-picker-value>
+{% endmacro %}
+
+{% macro take_block(src) %}
+  <div class="blk source" data-take>
+    {{ tag("take") }}
+    {{ link_input("source", src.url if src else "", title=src.title if src else none) }}
+    <button type="button" class="blk-x" data-remove-take aria-label="Remove this playlist" title="Remove this playlist">&times;</button>
+  </div>
+{% endmacro %}
+
+{% macro builder(a, sources=None, new=False) %}
+  {% set never = a.every_unit in ("never", "always") %}{# no "every N" for these two #}
+  <div class="workspace">
+  <div class="stack">
+  <div class="blk hat event" data-schedule>
+    <small class="blk-tag">start</small>
+    <span class="every-part" {% if never %}hidden{% endif %}>every
+      <input name="every_n" type="number" min="1" max="{{ max_every.hours }}" class="slot num" aria-label="Every how many"
+             value="{{ a.every_n or 1 }}" required {% if never %}disabled{% endif %}></span>
+    <span class="never-part" {% if not never %}hidden{% endif %}>run</span>
+    <select name="every_unit" class="slot" aria-label="How often">
+      {% for u in units %}<option value="{{ u }}" {% if (a.every_unit or "hours") == u %}selected{% endif %}>
+        {{- {"always": "always (every 5 minutes)", "never": "never (run on button press)"}.get(u, u) }}</option>{% endfor %}
     </select>
-    <input name="count" type="number" min="1" max="{{ max_songs }}"
-           value="{{ a.count if a.count else '' }}" placeholder="all"> songs
-    <small>(blank = no limit, max {{ max_songs }})</small>
-  </p>
-  <p class="rule">
-    Only songs added in the last
-    <input name="days" type="number" min="1" max="3650"
-           value="{{ a.days if a.days else '' }}" placeholder="any"> days
-    <small>(blank = any time)</small>
-  </p>
+  </div>
+
+  <div class="drop" data-drop aria-label="Your automation's blocks">
+    {% for src in (sources or []) %}{{ take_block(src) }}{% endfor %}
+
+    {% call optional("trigger", not new and (a.trigger or "any") != "any", "trig") %}
+      when songs were
+      <select name="trigger" class="slot" aria-label="Trigger">
+        {% for t, label in triggers.items() if t != "any" %}<option value="{{ t }}" {% if (a.trigger or "added") == t or (a.trigger == "any" and t == "added") %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+      in
+      {{ link_input("trigger_source", a.trigger_url, required=True, title=a.trigger_title) }}
+    {% endcall %}
+
+    {% call optional("keep", not new and a.count, "keep") %}
+      keep the
+      <select name="pick" class="slot" aria-label="Which songs">
+        {% for p in picks %}<option value="{{ p }}" {% if (a.pick or "newest") == p %}selected{% endif %}>{{ p }}</option>{% endfor %}
+      </select>
+      <input name="count" type="number" min="1" max="{{ max_songs }}" class="slot num" aria-label="How many songs"
+             value="{{ a.count or 30 }}">
+      songs
+    {% endcall %}
+
+    {% call optional("days", not new and a.days, "filter") %}
+      added in the last
+      <input name="days" type="number" min="1" max="3650" class="slot num" aria-label="Days" value="{{ a.days or 30 }}">
+      days
+    {% endcall %}
+
+    {% call optional("compare", not new and a.compare_id, "compare") %}
+      only songs that
+      <select name="compare_mode" class="slot" aria-label="Are or aren't">
+        {% for m, label in compares.items() %}<option value="{{ m }}" {% if (a.compare_mode or "not_in") == m %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+      in
+      {{ link_input("compare_source", a.compare_url, required=True, title=a.compare_title) }}
+    {% endcall %}
+
+    {% call optional("keep_old", not new and a.keep_old, "forever") %}
+      never remove songs
+      <input type="hidden" name="keep_old" value="1">
+    {% endcall %}
+
+    {% call optional("copy", not new and a.copies != 0, "out") %}
+      <input type="hidden" name="copies" value="1">
+      {% set existing = a.dest_existing %}
+      {% set own_made = not new and a.dest_id and not existing %}
+      into
+      <select name="dest_mode" class="slot" aria-label="A new playlist or one you already have" data-dest-mode>
+        <option value="new" {% if not existing %}selected{% endif %}>{{ "its own" if own_made else "a new" }}</option>
+        <option value="existing" {% if existing %}selected{% endif %}>my playlist</option>
+      </select>
+      <span class="dest-new" {% if existing %}hidden{% endif %}>
+        {% if own_made %}
+          <span class="slot"><img src="/static/media/{{ (a.dest_service or 'Spotify')|lower }}.svg" alt="">{{ a.dest_service or "Spotify" }}</span>
+        {% else %}
+          <select name="dest_service" class="slot" aria-label="Spotify or YouTube">
+            {% for s in services|reverse %}<option value="{{ s }}" {% if a.dest_service == s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+          </select>
+        {% endif %}
+        playlist named
+        <input name="dest_name" class="slot wide" placeholder="automatic" value="{{ '' if existing else (a.dest_name or '') }}" aria-label="Playlist name">
+      </span>
+      <span class="dest-existing" {% if not existing %}hidden{% endif %}>
+        {{ link_input("dest_link", a.dest_url if existing else "", title=a.dest_name if existing else none) }}
+        <small class="dest-note">your own songs in it stay</small>
+      </span>
+    {% endcall %}
+
+    {% call optional("dedupe", not new and a.dedupe_id, "clean") %}
+      duplicates from
+      {{ link_input("dedupe_source", a.dedupe_url, title=a.dedupe_title) }}
+    {% endcall %}
+
+    <p class="drop-hint">Drag blocks in here <span class="on-wide">from the right</span><span class="on-narrow">from above</span></p>
+  </div>
+
+  <div class="blk cap end"><small class="blk-tag">end</small></div>
+  </div>
+
+  <aside class="palette" aria-label="Blocks">
+    <h3>Blocks</h3>
+    <p class="fine">Drag one into your automation.</p>
+    {% for kind, cls in [("take", "source"), ("trigger", "trig"), ("keep", "keep"), ("days", "filter"),
+                         ("compare", "compare"), ("keep_old", "forever"), ("copy", "out"), ("dedupe", "clean")] %}
+      <button type="button" class="blk-add {{ cls }}" {% if kind == "take" %}data-add-take{% else %}data-add="{{ kind }}"{% endif %}>
+        <strong>{{ BLOCKS[kind][0] }}</strong><small>{{ BLOCKS[kind][1] }}</small>
+      </button>
+    {% endfor %}
+  </aside>
+  </div>
+
+  <template data-take-template>{{ take_block(none) }}</template>
+  <p class="build-error" role="alert" hidden></p>
+
+  {% if not new %}{# new automations ask for these in a popup after "Make automation" #}
+    <div class="blk cap named">
+      <label class="named-row">name it
+        <input name="name" class="slot wide" maxlength="80" value="{{ a.name or '' }}" placeholder="{{ a.source_title or '' }}">
+      </label>
+      <label class="named-row">description
+        <textarea name="note" class="slot" maxlength="300" rows="2"
+                  placeholder="what this automation is for (optional)">{{ a.note or '' }}</textarea>
+      </label>
+    </div>
+  {% endif %}
+{% endmacro %}
+
+{% macro name_dialog() %}
+  <dialog class="name-dialog">
+    <h2>Name your automation</h2>
+    <label class="field">Name
+      <input name="name" maxlength="80" placeholder="e.g. Master playlist" autocomplete="off">
+    </label>
+    <label class="field">Description <small>(optional)</small>
+      <textarea name="note" maxlength="300" rows="3" placeholder="what this automation is for"></textarea>
+    </label>
+    <div class="script-actions">
+      <button class="blk-btn go">&#10003; Create</button>
+      <button type="button" class="blk-btn halt" data-close>&larr; Back to blocks</button>
+    </div>
+  </dialog>
 {% endmacro %}

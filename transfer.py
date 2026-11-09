@@ -16,7 +16,7 @@ SP_OEMBED = "https://open.spotify.com/oembed?url=https://open.spotify.com/track/
 
 API_ERRORS = (SpotifyException, HttpError, requests.RequestException, httplib2.HttpLib2Error,
               ConnectionError, TimeoutError, ssl.SSLError)
-SAVED = "Everything scanned so far is saved."
+SAVED = "Everything that was scanned so far is saved!"
 
 
 def oembed_cover(track_id):
@@ -35,13 +35,26 @@ def _when(seconds):
         return f"{seconds}s"
     return f"{seconds // 3600}h {seconds % 3600 // 60}m" if seconds >= 3600 else f"{seconds // 60}m"
 
+def spotify_wait(e):
+    """Seconds Spotify says to wait after a 429, or None if it isn't one."""
+    if not (isinstance(e, SpotifyException) and e.http_status == 429):
+        return None
+    try:
+        return int((e.headers or {}).get("Retry-After", 0))
+    except ValueError:
+        return 0
+
+def lookup_stopped(e):
+    """Flash text when scanning songs fails."""
+    wait = spotify_wait(e)
+    if wait is not None:
+        return f"Song lookup has stopped (Spotify rate limit was hit). Please try again in {_when(wait)}. {SAVED}"
+    return f"Song lookup has stopped: {error_message(e)}"
+
 def blocked_message(e):
-    if isinstance(e, SpotifyException) and e.http_status == 429:
-        try:
-            wait = int((e.headers or {}).get("Retry-After", 0))
-        except ValueError:
-            wait = 0
-        return f"Spotify rate limit hit, please try again in {_when(wait)}. {SAVED}"
+    wait = spotify_wait(e)
+    if wait is not None:
+        return f"Spotify rate limit was hit. Please try again in {_when(wait)}. {SAVED}"
     if isinstance(e, HttpError):
         body = e.content or b""
         if e.resp.status == 403 and b"quotaExceeded" in body:
@@ -125,10 +138,10 @@ class YouTubeToSpotify:
     def import_cost(self, count):
         return ""
 
-    def create_empty(self, name, source_id):
+    def create_empty(self, name, source_id, description=None):
         new = self.sp.current_user_playlist_create(
             name, public=False,
-            description=f"Imported from https://www.youtube.com/playlist?list={source_id}",
+            description=description or f"Imported from https://www.youtube.com/playlist?list={source_id}",
         )
         return new["id"], new["external_urls"]["spotify"]
 
@@ -137,6 +150,15 @@ class YouTubeToSpotify:
         for i in range(100, len(ids), 100):
             self.sp.playlist_add_items(dest_id, ids[i:i + 100])
         return len(ids)
+
+    def add_remove(self, dest_id, add, remove):
+        """Change only these songs in a playlist the user made (the rest stays, with its order and dates).
+        Returns (added, removed)."""
+        for i in range(0, len(remove), 100):
+            self.sp.playlist_remove_all_occurrences_of_items(dest_id, remove[i:i + 100])
+        for i in range(0, len(add), 100):
+            self.sp.playlist_add_items(dest_id, add[i:i + 100])
+        return list(add), list(remove)
 
     @staticmethod
     def playlist_url(dest_id):
@@ -203,10 +225,10 @@ class SpotifyToYouTube:
     def import_cost(self, count):
         return f"Uses about {50 + 50 * count:,} of your 10,000 daily YouTube units (50 per song)."
 
-    def create_empty(self, name, source_id):
+    def create_empty(self, name, source_id, description=None):
         new = self.yt.playlists().insert(part="snippet,status", body={
             "snippet": {"title": name,
-                        "description": f"Imported from https://open.spotify.com/playlist/{source_id}"},
+                        "description": description or f"Imported from https://open.spotify.com/playlist/{source_id}"},
             "status": {"privacyStatus": "private"},
         }).execute()
         return new["id"], self.playlist_url(new["id"])
@@ -236,6 +258,36 @@ class SpotifyToYouTube:
             if not blocked_message(e):
                 raise
         return len(wanted & current.keys())
+
+    def add_remove(self, dest_id, add, remove):
+        """Change only these songs in a playlist the user made (the rest stays). Stops quietly when the
+        YouTube quota runs out. Returns (added, removed)."""
+        current = {}  # video id -> its playlist item ids
+        req = self.yt.playlistItems().list(part="snippet", playlistId=dest_id, maxResults=50)
+        while req:
+            resp = req.execute()
+            for item in resp["items"]:
+                current.setdefault(item["snippet"]["resourceId"]["videoId"], []).append(item["id"])
+            req = self.yt.playlistItems().list_next(req, resp)
+        added, removed = [], []
+        try:
+            for vid in remove:
+                for item_id in current.get(vid, []):
+                    self.yt.playlistItems().delete(id=item_id).execute()
+                if vid in current:
+                    removed.append(vid)
+            for vid in add:
+                if vid not in current:
+                    self.yt.playlistItems().insert(part="snippet", body={"snippet": {
+                        "playlistId": dest_id,
+                        "resourceId": {"kind": "youtube#video", "videoId": vid},
+                    }}).execute()
+                    current[vid] = []
+                    added.append(vid)
+        except HttpError as e:
+            if not blocked_message(e):
+                raise
+        return added, removed
 
     @staticmethod
     def playlist_url(dest_id):

@@ -63,6 +63,43 @@ def connect():
     if "source_count" not in have:
         db.execute("ALTER TABLE automations ADD COLUMN source_count INTEGER")
         db.execute("ALTER TABLE automations ADD COLUMN source_checked REAL")
+    for column, kind in (("every_n", "INTEGER DEFAULT 1"), ("every_unit", "TEXT DEFAULT 'hours'"),
+                         ("trigger", "TEXT DEFAULT 'any'"), ("keep_old", "INTEGER DEFAULT 0"),
+                         ("source_keys", "TEXT"),   
+                         ("sent_ids", "TEXT"),    
+                         ("last_ts", "REAL"),      
+                         ("name", "TEXT"), ("note", "TEXT"),  
+                         ("kind", "TEXT DEFAULT 'copy'"),
+                         ("dest_service", "TEXT"),            
+                         ("copies", "INTEGER DEFAULT 1"),      #
+                         ("dest_existing", "INTEGER DEFAULT 0"),
+                         ("trigger_service", "TEXT"), ("trigger_id", "TEXT"), ("trigger_title", "TEXT"),
+                         ("trigger_keys", "TEXT"),
+                         ("compare_mode", "TEXT"), ("compare_service", "TEXT"), ("compare_id", "TEXT"),
+                         ("compare_title", "TEXT"),
+                         ("unchecked", "TEXT"), 
+                         ("dedupe_service", "TEXT"), ("dedupe_id", "TEXT"), ("dedupe_title", "TEXT")):  # "remove duplicates" block
+        if column not in have:
+            db.execute(f"ALTER TABLE automations ADD COLUMN {column} {kind}")
+    db.execute("UPDATE automations SET copies = 0, dedupe_service = dest_service, dedupe_id = dest_id, "
+               "dedupe_title = dest_name, kind = 'copy' WHERE kind = 'dedupe'")
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS automation_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            automation_id INTEGER NOT NULL,
+            service TEXT NOT NULL,        -- YouTube / Spotify
+            playlist_id TEXT NOT NULL,
+            title TEXT,
+            item_count INTEGER, checked REAL  -- YouTube quota saver: skip a run when nothing changed
+        )
+    """)
+    for a in db.execute("SELECT * FROM automations WHERE id NOT IN (SELECT automation_id FROM automation_sources)").fetchall():
+        source, dest = {"yt2sp": ("YouTube", "Spotify"), "sp2yt": ("Spotify", "YouTube")}.get(a["direction"], (None, None))
+        if source and a["source_id"]:
+            db.execute("INSERT INTO automation_sources (automation_id, service, playlist_id, title, item_count, checked) "
+                       "VALUES (?, ?, ?, ?, ?, ?)", (a["id"], source, a["source_id"], a["source_title"],
+                                                     a["source_count"], a["source_checked"]))
+            db.execute("UPDATE automations SET dest_service = IFNULL(dest_service, ?) WHERE id = ?", (dest, a["id"]))
     db.execute("""
         CREATE TABLE IF NOT EXISTS accounts (
             provider TEXT NOT NULL,     -- 'spotify' or 'google'
@@ -107,12 +144,32 @@ def get_automation(db, auto_id, owner):
     row = db.execute("SELECT * FROM automations WHERE id = ? AND owner = ?", (auto_id, owner)).fetchone()
     return dict(row) if row else None
 
-def add_automation(db, owner, direction, source_id, source_title, dest_name, count, days=None, pick="newest"):
-    db.execute(
-        "INSERT INTO automations (owner, direction, source_id, source_title, dest_name, count, days, pick) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (owner, direction, source_id, source_title, dest_name, count, days, pick),
-    )
+def add_automation(db, owner, sources, **fields):
+    first = sources[0] if sources else (None, None, fields.get("dedupe_title"))
+    fields = {"owner": owner, "source_id": first[1], "source_title": first[2], **fields}
+    cur = db.execute(f"INSERT INTO automations ({', '.join(fields)}) VALUES ({', '.join('?' * len(fields))})",
+                     list(fields.values()))
+    set_sources(db, cur.lastrowid, sources)
+    return cur.lastrowid
+
+def sources(db, auto_id):
+    return [dict(r) for r in db.execute("SELECT * FROM automation_sources WHERE automation_id = ? ORDER BY id", (auto_id,))]
+
+def set_sources(db, auto_id, new):
+    old = {(s["service"], s["playlist_id"]): s for s in sources(db, auto_id)}
+    db.execute("DELETE FROM automation_sources WHERE automation_id = ?", (auto_id,))
+    for service, playlist_id, title in new:
+        kept = old.get((service, playlist_id)) or {}
+        db.execute("INSERT INTO automation_sources (automation_id, service, playlist_id, title, item_count, checked) "
+                   "VALUES (?, ?, ?, ?, ?, ?)", (auto_id, service, playlist_id, title,
+                                                 kept.get("item_count"), kept.get("checked")))
+    if new:
+        db.execute("UPDATE automations SET source_id = ?, source_title = ? WHERE id = ?", (new[0][1], new[0][2], auto_id))
+    db.commit()
+
+def update_source(db, source_id, **fields):
+    db.execute(f"UPDATE automation_sources SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
+               [*fields.values(), source_id])
     db.commit()
 
 def update_automation(db, auto_id, **fields):
@@ -123,7 +180,8 @@ def update_automation(db, auto_id, **fields):
     db.commit()
 
 def delete_automation(db, auto_id, owner):
-    db.execute("DELETE FROM automations WHERE id = ? AND owner = ?", (auto_id, owner))
+    if db.execute("DELETE FROM automations WHERE id = ? AND owner = ?", (auto_id, owner)).rowcount:
+        db.execute("DELETE FROM automation_sources WHERE automation_id = ?", (auto_id,))
     db.commit()
 
 def get_match(db, key, table="matches"):
