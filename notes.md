@@ -18,7 +18,6 @@ verify the google thing maybe
 
 spotify stuff for the playlists
 make the /guide part with both automation explantion and /localhost with localhost instructions
-update hakos 
 
 scoring so i dont forget
 - title matches: +4 (+2 if its off by like 1/2 characters)

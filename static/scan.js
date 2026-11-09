@@ -75,6 +75,28 @@ function show(list) {
   try { sessionStorage.setItem(memoryKey, list); } catch {}
 }
 
+table.addEventListener("change", async (e) => {
+  const box = e.target;
+  if (!box.matches('input[name="confirm"]')) return;
+  const cell = box.closest("td");
+  cell.querySelector(".tick-error")?.remove();
+  const body = new FormData();
+  body.set("key", box.value);
+  body.set("on", box.checked ? "1" : "0");
+  let ok = false;
+  try {
+    const r = await fetch(table.dataset.tick, { method: "POST", body, credentials: "same-origin" });
+    ok = r.ok;
+  } catch {}
+  if (!ok) {
+    const note = document.createElement("small");
+    note.className = "tick-error";
+    note.textContent = "not saved";
+    note.title = "Couldn't save this tick. Check your connection and tick it again.";
+    cell.append(note);
+  }
+});
+
 function recount() {
   for (const el of document.querySelectorAll("[data-count]"))
     el.textContent = table.querySelectorAll(`tr[id^=row-].${el.dataset.count}`).length;

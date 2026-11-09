@@ -306,6 +306,18 @@ def spotify_cover(track_id):
     resp.headers["Cache-Control"] = "private, max-age=86400"
     return resp
 
+@app.route("/transfer/<slug>/tick", methods=["POST"])
+def transfer_tick(slug):
+    if slug not in DIRECTIONS:
+        abort(404)
+    if not all(connected()):
+        return jsonify(error="Log in to both Spotify and YouTube first."), 403
+    key = (request.form.get("key") or "").strip()
+    if not key:
+        return jsonify(error="No song given."), 400
+    store.set_approved(store.connect(), {key: request.form.get("on") == "1"}, DIRECTIONS[slug].table)
+    return jsonify(ok=True)
+
 @app.route("/transfer/<slug>/<playlist_id>/scan", methods=["POST"])
 def transfer_scan(slug, playlist_id):
     d, db = direction(slug), store.connect()
