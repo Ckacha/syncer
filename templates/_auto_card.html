@@ -90,6 +90,23 @@
   {% endif %}
   {% for msg in a.messages or [] %}<div class="blk cap run-msg">{{ msg }}</div>{% endfor %}
 
+  {% if a.versions %}
+    <details class="versions">
+      <summary>Saved versions ({{ a.versions|length }})</summary>
+      <ul>
+        {% for v in a.versions %}
+          <li>
+            <span><strong>{{ v.when }}</strong> <span class="pill">{{ v.label }}</span> <small class="fine">{{ v.songs }}</small></span>
+            <form method="post" action="/automations/{{ a.id }}/restore/{{ v.id }}"
+                  onsubmit='return confirm({{ ("Put " ~ v.names ~ " back to how it was on " ~ v.when ~ "? Its songs right now get saved first, and the automation gets paused." ~ (" Uses 50 YouTube units per song it changes." if v.youtube else ""))|tojson }})'>
+              <button class="blk-btn edit small">Go back to this</button>
+            </form>
+          </li>
+        {% endfor %}
+      </ul>
+    </details>
+  {% endif %}
+
 <div class="run-progress" hidden>
   <progress class="progress" max="100" value="0"></progress>
   <small class="run-step fine">Starting...</small>
@@ -101,6 +118,17 @@
       {% if a.paused %}<button class="blk-btn go">&#9654; Resume</button>
       {% else %}<button class="blk-btn halt">&#10074;&#10074; Pause</button>{% endif %}
     </form>
+    {% if a.undo_info %}
+    <form method="post" action="/automations/{{ a.id }}/undo"
+          onsubmit='return confirm({{ ("Put " ~ a.undo_info.names ~ " back to how it was before the run on " ~ a.undo_info.when ~ "? The automation gets paused so it doesn't redo it.")|tojson }})'>
+      <button class="blk-btn undo" title="Saved before the run on {{ a.undo_info.when }}">&#8630; Undo last run</button>
+    </form>
+    {% endif %}
+    {% if a.can_save %}
+    <form method="post" action="/automations/{{ a.id }}/save">
+      <button class="blk-btn save" title="Save the songs in the playlist right now, to go back to later">Save songs</button>
+    </form>
+    {% endif %}
     <a class="blk-btn edit" href="/automations/{{ a.id }}/edit">&#9998; Edit</a>
     <form method="post" action="/automations/{{ a.id }}/delete"
           onsubmit="return confirm('Delete this automation? Its playlist stays.')">

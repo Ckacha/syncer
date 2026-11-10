@@ -153,6 +153,14 @@
 .blk-btn.go { background: var(--blk-out); }
 .blk-btn.halt { background: var(--blk-event); }
 .blk-btn.edit { background: var(--blk-rule); }
+.blk-btn.undo { background: var(--blk-event); filter: saturate(0.6); }
+.blk-btn.save { background: var(--blk-rule); filter: saturate(0.6); }
+.versions { margin: 8px 0; }
+.versions summary { cursor: pointer; font-weight: 500; }
+.versions ul { list-style: none; padding: 0; margin: 6px 0 0; display: grid; gap: 6px; }
+.versions li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; }
+.versions form { margin: 0; }
+.blk-btn.small { padding: 3px 10px; font-size: 0.85em; }
 .blk-btn.del { background: var(--blk-del); }
 
 .auto-intro { color: var(--text); line-height: 1.6; }

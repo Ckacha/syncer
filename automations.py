@@ -121,9 +121,15 @@ PROGRESS = {}
 def step(auto, done, text):
     PROGRESS[auto["id"]] = (round(done, 3), text)
 
+def remember(auto, service, playlist_id, name, keys):
+    if not any(s["service"] == service and s["playlist_id"] == playlist_id for s in auto["_undo"]):
+        auto["_undo"].append({"service": service, "playlist_id": playlist_id, "name": name, "keys": list(keys)})
+
 def run(auto, yt, sp, db, force=False):
     srcs = store.sources(db, auto["id"])
     step(auto, 0.03, "Reading playlists...")
+    auto["_undo"] = []
+    before = {k: auto.get(k) for k in ("sent_ids", "source_keys", "trigger_keys")}
     if not force:
         store.update_automation(db, auto["id"], last_ts=time.time()) 
     results = []
@@ -140,13 +146,77 @@ def run(auto, yt, sp, db, force=False):
                         store.update_source(db, s["id"], item_count=count, checked=time.time())
         if auto.get("dedupe_id"):
             step(auto, 0.95, "Removing duplicates...")
-            results.append(dedupe({"service": auto["dedupe_service"], "playlist_id": auto["dedupe_id"]}, yt, sp))
+            had = []
+            cleaned = dedupe({"service": auto["dedupe_service"], "playlist_id": auto["dedupe_id"]}, yt, sp, before=had)
+            if cleaned != "No duplicates found.":
+                remember(auto, auto["dedupe_service"], auto["dedupe_id"], auto.get("dedupe_title"), had)
+            results.append(cleaned)
     except API_ERRORS as e:
         results.append(f"Stopped: {error_message(e)}")
     result = " ".join(results) or "Nothing to do: add a \"copy into\" or \"remove duplicates\" block."
 
-    store.update_automation(db, auto["id"], last_run=datetime.now().strftime("%Y-%m-%d %H:%M"), last_result=result)
+    ran = datetime.now().strftime("%Y-%m-%d %H:%M")
+    store.update_automation(db, auto["id"], last_run=ran, last_result=result)
+    if auto["_undo"]:
+        store.add_snapshot(db, auto["id"], "run", ran, dict(before, playlists=auto["_undo"]))
     return result
+
+MEMORY = ("sent_ids", "source_keys", "trigger_keys")
+
+def targets(auto):
+    out = []
+    if auto.get("copies", 1) and auto.get("dest_id"):
+        out.append((auto.get("dest_service") or "Spotify", auto["dest_id"], auto.get("dest_name")))
+    if auto.get("dedupe_id") and (auto["dedupe_service"], auto["dedupe_id"]) not in [t[:2] for t in out]:
+        out.append((auto["dedupe_service"], auto["dedupe_id"], auto.get("dedupe_title")))
+    return out
+
+def save_now(auto, yt, sp, db, kind="manual"):
+    playlists = []
+    for service, playlist_id, name in targets(auto):
+        step(auto, 0.1, f"Reading {name or 'the playlist'}...")
+        d = reader(service, yt, sp)
+        loaded = d.load(playlist_id)
+        if loaded is None:
+            return f"Couldn't open {name or 'the playlist'} (deleted, or not yours?), nothing saved."
+        playlists.append({"service": service, "playlist_id": playlist_id, "name": name or loaded[0],
+                          "keys": [d.key(i) for i in loaded[1]]})
+    if not playlists:
+        return "Nothing to save yet: this automation hasn't made its playlist."
+    store.add_snapshot(db, auto["id"], kind, datetime.now().strftime("%Y-%m-%d %H:%M"),
+                       dict({k: auto.get(k) for k in MEMORY}, playlists=playlists))
+    return "Saved: " + ", ".join(f"{p['name']} ({len(p['keys'])} songs)" for p in playlists) + "."
+
+def restore(auto, yt, sp, db, snap_id=None):
+    snaps = store.snapshots(db, auto["id"])
+    snap = next((s for s in snaps if s["id"] == snap_id) if snap_id else (s for s in snaps if s["kind"] == "run"), None)
+    if not snap:
+        return "Nothing to undo." if snap_id is None else "That saved version is gone."
+    saved = snap["data"]
+    try:
+        if snap_id is not None:
+            first = save_now(auto, yt, sp, db, kind="restore")
+            if not first.startswith(("Saved", "Nothing to save")):
+                return first
+        done = []
+        for n, p in enumerate(saved["playlists"]):
+            step(auto, 0.3 + 0.6 * n / len(saved["playlists"]), f"Putting back {p['name'] or 'the playlist'}...")
+            got = writer(p["service"], yt, sp).replace(p["playlist_id"], p["keys"])
+            line = f"{p['name'] or 'the playlist'} is back to {len(p['keys'])} songs"
+            if got < len(set(p["keys"])):
+                line += f" ({len(set(p['keys'])) - got} didn't fit in today's YouTube quota, try again tomorrow)"
+            done.append(line)
+    except API_ERRORS as e:
+        return f"Stopped: {error_message(e)}"
+    what = "Undid the run from" if snap_id is None else "Went back to the version from"
+    message = (f"{what} {snap['taken']}: " + ", ".join(done)
+               + ". Paused so it doesn't change it again, press Resume when ready.")
+    if any("quota" in line for line in done):
+        return message
+    if snap_id is None:
+        store.delete_snapshot(db, auto["id"], snap["id"])
+    store.update_automation(db, auto["id"], paused=1, last_result=message, **{k: saved.get(k) for k in MEMORY})
+    return message
 
 def sync(auto, srcs, yt, sp, db, force=False):
     dest_service = auto.get("dest_service") or "Spotify"
@@ -264,6 +334,10 @@ def sync(auto, srcs, yt, sp, db, force=False):
         return result + "."
     if auto["dest_id"]:
         try:
+            rd = reader(dest_service, yt, sp)
+            was = rd.load(auto["dest_id"])
+            if was is not None and [rd.key(i) for i in was[1]] != ids:
+                remember(auto, dest_service, auto["dest_id"], auto.get("dest_name"), [rd.key(i) for i in was[1]])
             in_playlist = out.replace(auto["dest_id"], ids)
         except (SpotifyException, HttpError) as e:
             if not is_missing(e):
@@ -328,6 +402,8 @@ def into_existing(auto, ids, out, yt, sp, db):
     owned = json.loads(auto.get("sent_ids") or "[]") 
     remove = [x for x in current if x in set(owned) and x not in want]
     add = [x for x in ids if x not in have]
+    if add or remove:
+        remember(auto, dest_service, auto["dest_id"], auto.get("dest_name"), [d.key(i) for i in loaded[1]])
     added, removed = out.add_remove(auto["dest_id"], add, remove) if (add or remove) else ([], [])
     gone = set(removed)
     owned = [x for x in owned if x not in gone] + [x for x in added if x not in set(owned)]
@@ -337,7 +413,8 @@ def into_existing(auto, ids, out, yt, sp, db):
         result += f", {len(add) - len(added)} didn't fit in today's YouTube quota"
     return result
 
-def dedupe(src, yt, sp):
+def dedupe(src, yt, sp, before=None):
+    before = [] if before is None else before
     removed = 0
     if src["service"] == "Spotify":
         order, counts = [], {} 
@@ -347,6 +424,7 @@ def dedupe(src, yt, sp):
                 t = entry.get("item") or entry.get("track") or {}
                 uri = t.get("uri") if t.get("id") else None
                 if uri:
+                    before.append(t["id"])
                     counts[uri] = counts.get(uri, 0) + 1
                 if uri is None or counts[uri] == 1:
                     order.append(uri)
@@ -366,6 +444,7 @@ def dedupe(src, yt, sp):
             resp = req.execute()
             for item in resp["items"]:
                 vid = item["snippet"]["resourceId"].get("videoId")
+                before.append(vid)
                 if vid in seen:
                     extra.append(item["id"])
                 else:

@@ -554,6 +554,14 @@ def card_data(db, a):
     a["held"] = bool(set(json.loads(a.get("unchecked_keys") or "[]")) - set(json.loads(a.get("unchecked_ok") or "[]")))
     a["ran_on"] = ran_on(a.get("last_run"))
     a["result_points"] = result_points(a.get("last_result"))
+    kinds = {"run": "before a run", "manual": "saved by you", "restore": "before going back"}
+    a["versions"] = [{"id": s["id"], "kind": s["kind"], "when": ran_on(s["taken"]), "label": kinds.get(s["kind"], s["kind"]),
+                      "songs": ", ".join(f"{p['name'] or 'playlist'}: {len(p['keys'])} songs" for p in s["data"]["playlists"]),
+                      "names": ", ".join(p["name"] or "the playlist" for p in s["data"]["playlists"]),
+                      "youtube": any(p["service"] == "YouTube" for p in s["data"]["playlists"])}
+                     for s in store.snapshots(db, a["id"])]
+    a["undo_info"] = next((v for v in a["versions"] if v["kind"] == "run"), None)
+    a["can_save"] = bool(automations.targets(a))
     return a
 
 def ran_on(last_run):
@@ -815,6 +823,37 @@ def automations_run(auto_id):
     flash(f"{auto.get('name') or auto['dest_name']}: {messages[0]}")
     for msg in messages[1:]:
         flash(msg)
+    return redirect("/automations")
+
+@app.route("/automations/<int:auto_id>/undo", methods=["POST"])
+def automations_undo(auto_id):
+    return version_action(auto_id, lambda auto, yt, sp, db: automations.restore(auto, yt, sp, db))
+
+@app.route("/automations/<int:auto_id>/save", methods=["POST"])
+def automations_save(auto_id):
+    return version_action(auto_id, automations.save_now)
+
+@app.route("/automations/<int:auto_id>/restore/<int:snap_id>", methods=["POST"])
+def automations_restore(auto_id, snap_id):
+    return version_action(auto_id, lambda auto, yt, sp, db: automations.restore(auto, yt, sp, db, snap_id))
+
+def version_action(auto_id, action):
+    db = store.connect()
+    auto = store.get_automation(db, auto_id, uid())
+    in_page = request.headers.get("X-Scan") == "1"
+    if not auto:
+        return jsonify(error="That automation is gone.") if in_page else redirect("/automations")
+    try:
+        result = action(auto, youtube_client(uid()), spotify_client(uid()), db)
+    except NotLoggedIn:
+        result = "Log in to both Spotify and YouTube again first."
+    finally:
+        automations.PROGRESS.pop(auto_id, None)
+    if in_page:
+        a = card_data(db, store.get_automation(db, auto_id, uid()))
+        a["messages"] = [result]
+        return jsonify(html=render_template("_auto_card.html", a=a, **block_options()))
+    flash(f"{auto.get('name') or auto['dest_name']}: {result}")
     return redirect("/automations")
 
 @app.route("/automations/<int:auto_id>/progress")

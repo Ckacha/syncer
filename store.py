@@ -118,6 +118,15 @@ def connect():
             PRIMARY KEY (owner, slug, playlist_id)
         )
     """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            automation_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            taken TEXT NOT NULL,
+            data TEXT NOT NULL
+        )
+    """)
     if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users'").fetchone():
         db.execute("INSERT OR IGNORE INTO accounts SELECT 'spotify', spotify_id, uid FROM users")
         db.execute("DROP TABLE users")
@@ -189,8 +198,27 @@ def update_automation(db, auto_id, **fields):
     )
     db.commit()
 
+KEEP_SNAPSHOTS = {"run": 10, "restore": 5, "manual": 20}
+
+def add_snapshot(db, auto_id, kind, taken, data):
+    db.execute("INSERT INTO snapshots (automation_id, kind, taken, data) VALUES (?, ?, ?, ?)",
+               (auto_id, kind, taken, json.dumps(data)))
+    db.execute("DELETE FROM snapshots WHERE automation_id = ? AND kind = ? AND id NOT IN "
+               "(SELECT id FROM snapshots WHERE automation_id = ? AND kind = ? ORDER BY id DESC LIMIT ?)",
+               (auto_id, kind, auto_id, kind, KEEP_SNAPSHOTS[kind]))
+    db.commit()
+
+def snapshots(db, auto_id):
+    return [dict(r, data=json.loads(r["data"])) for r in
+            db.execute("SELECT * FROM snapshots WHERE automation_id = ? ORDER BY id DESC", (auto_id,))]
+
+def delete_snapshot(db, auto_id, snap_id):
+    db.execute("DELETE FROM snapshots WHERE automation_id = ? AND id = ?", (auto_id, snap_id))
+    db.commit()
+
 def delete_automation(db, auto_id, owner):
     if db.execute("DELETE FROM automations WHERE id = ? AND owner = ?", (auto_id, owner)).rowcount:
+        db.execute("DELETE FROM snapshots WHERE automation_id = ?", (auto_id,))
         db.execute("DELETE FROM automation_sources WHERE automation_id = ?", (auto_id,))
     db.commit()
 

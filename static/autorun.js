@@ -1,6 +1,7 @@
 document.addEventListener("submit", async (e) => {
   const form = e.target;
-  if (!/\/automations\/\d+\/(run|understand)$/.test(form.getAttribute("action") || "")) return;
+  if (e.defaultPrevented) return;
+  if (!/\/automations\/\d+\/(run|understand|undo|save|restore\/\d+)$/.test(form.getAttribute("action") || "")) return;
   e.preventDefault();
   const card = form.closest(".script");
   if (!card || card.classList.contains("running")) return;
@@ -11,7 +12,7 @@ document.addEventListener("submit", async (e) => {
   
   card.classList.add("running");
   card.querySelectorAll(".run-msg, .run-error").forEach((el) => el.remove());
-  card.querySelectorAll(".script-actions button, .held button").forEach((b) => { b.disabled = true; });
+  card.querySelectorAll(".script-actions button, .held button, .versions button").forEach((b) => { b.disabled = true; });
   box.hidden = false;
   bar.value = 0;
   stepText.textContent = "Starting...";
@@ -51,7 +52,7 @@ document.addEventListener("submit", async (e) => {
   }
   card.classList.remove("running");
   box.hidden = true;
-  card.querySelectorAll(".script-actions button, .held button").forEach((b) => { b.disabled = false; });
+  card.querySelectorAll(".script-actions button, .held button, .versions button").forEach((b) => { b.disabled = false; });
   const note = document.createElement("div");
   note.className = "blk cap run-error";
   note.textContent = result.error || "Something went wrong.";
