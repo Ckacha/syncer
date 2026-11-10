@@ -3,6 +3,7 @@ document.addEventListener("submit", async (e) => {
   if (e.defaultPrevented) return;
   if (!/\/automations\/\d+\/(run|understand|undo|save|restore\/\d+)$/.test(form.getAttribute("action") || "")) return;
   e.preventDefault();
+  if (form.dataset.confirm && !confirm(form.dataset.confirm)) return;
   const card = form.closest(".script");
   if (!card || card.classList.contains("running")) return;
   const id = card.id.replace("auto-", "");

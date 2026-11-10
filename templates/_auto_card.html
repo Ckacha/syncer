@@ -98,7 +98,7 @@
           <li>
             <span><strong>{{ v.when }}</strong> <span class="pill">{{ v.label }}</span> <small class="fine">{{ v.songs }}</small></span>
             <form method="post" action="/automations/{{ a.id }}/restore/{{ v.id }}"
-                  onsubmit='return confirm({{ ("Put " ~ v.names ~ " back to how it was on " ~ v.when ~ "? Its songs right now get saved first, and the automation gets paused." ~ (" Uses 50 YouTube units per song it changes." if v.youtube else ""))|tojson }})'>
+                  data-confirm="Put {{ v.names }} back to how it was on {{ v.when }}? Its songs right now get saved first, and the automation gets paused.{% if v.youtube %} Uses 50 YouTube units per song it changes.{% endif %}">
               <button class="blk-btn edit small">Go back to this</button>
             </form>
           </li>
@@ -120,7 +120,7 @@
     </form>
     {% if a.undo_info %}
     <form method="post" action="/automations/{{ a.id }}/undo"
-          onsubmit='return confirm({{ ("Put " ~ a.undo_info.names ~ " back to how it was before the run on " ~ a.undo_info.when ~ "? The automation gets paused so it doesn't redo it.")|tojson }})'>
+          data-confirm="Put {{ a.undo_info.names }} back to how it was before the run on {{ a.undo_info.when }}? The automation gets paused so it doesn't redo it.">
       <button class="blk-btn undo" title="Saved before the run on {{ a.undo_info.when }}">&#8630; Undo last run</button>
     </form>
     {% endif %}
