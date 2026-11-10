@@ -12,7 +12,7 @@ NOISE_WORDS = (
 CHANNEL_NOISE = re.compile(r"vevo|official|music|records|\s-\stopic$", re.I)
 FEAT = re.compile(r"\s*[\(\[]?\s*\b(?:ft|feat|featuring)\b\.?\s+(?:[^\)\]/|]|/(?!\s))*[\)\]]?", re.I)
 DASHES = re.compile("\\s+[-\u2013\u2014]\\s+")  
-SLASH = re.compile(r"\s+/\s*|\s*/\s+") 
+SLASH = re.compile(r"\s+/\s*|\s*/\s+|(?<=[^\x00-\x7f])/(?=[^\x00-\x7f])")  
 SPOTIFY_LINK = re.compile(r"open\.spotify\.com/(?:intl-[\w-]+/)?(track|album)/([A-Za-z0-9]{22})")
 QUOTED = re.compile(r'[“"]([^”"]{2,})[”"]')
 JP_TITLE = re.compile(r"[『「]([^』」]+)[』」]")  #need to find more seperating symbols aasdpioasdpasd
@@ -403,6 +403,7 @@ def find_match(sp, video):
     romanized = [(f"{names[0]} {romaji(a)}", False) for a in artists[:2]
                  if names and not a.isascii() and romaji(a) != a]
     plain = [(n, False) for n in names[:2]]
+    plain += [(bare, False) for n in names[:1] if (bare := n.rstrip("。、！？!?.・ ")) and bare != n]  
     guests = [(f'track:"{names[0]}" artist:"{g}"', True) for g in video_guests(video["title"])
               if names and g.isascii() and g not in artists[:2]][:2]
     queries = queries[:2] + guests + romanized + plain + queries[2:]
@@ -411,7 +412,7 @@ def find_match(sp, video):
     for q, artist_hit in queries:
         if best_score >= AUTO_ADD:
             break
-        results = sp.search(q=q, type="track", limit=5)["tracks"]["items"]
+        results = sp.search(q=q, type="track", limit=5 if artist_hit else 10)["tracks"]["items"]
         seen += [t for t in results if t]
         for track in results:
             if not track:

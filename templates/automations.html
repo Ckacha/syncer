@@ -28,7 +28,11 @@
   {% endif %}
 
   <div class="auto-count">
-    <p>You currently have <strong>{{ autos|length }}</strong> automation{{ "" if autos|length == 1 else "s" }}, build one below!</p>
+    {% if autos %}
+      <p>You currently have <strong>{{ autos|length }}</strong> automation{{ "" if autos|length == 1 else "s" }}, build more below!</p>
+    {% else %}
+      <p>You don't have any automations yet, build your first one below!</p>
+    {% endif %}
   </div>
 
   <details class="build">
@@ -51,97 +55,10 @@
 
   <section class="scripts">
     {% for a in autos %}
-      <div class="script{% if a.paused %} paused{% endif %}">
-        <div class="script-head">
-          <h3>{{ a.name or a.source_title }}{% if a.paused %} <span class="pill warn">Paused</span>{% endif %}</h3>
-          {% if a.note %}<p>{{ a.note }}</p>{% endif %}
-        </div>
-        <div class="blk hat event">
-          {% if a.paused %}paused
-          {%- elif a.every_unit == "never" %}when Run now is pressed
-          {%- elif a.every_unit == "always" %}always <small>(every 5 minutes)</small>
-          {%- elif a.every_n and a.every_n > 1 %}every <span class="slot num">{{ a.every_n }}</span> {{ a.every_unit }}
-          {%- else %}every {{ (a.every_unit or "hours")[:-1] }}{% endif %}
-        </div>
-        {% if a.copies != 0 %}
-          {% for src in a.sources %}
-            <div class="blk source">
-              take
-              <span class="slot"><img src="/static/media/{{ src.service|lower }}.svg" alt="{{ src.service }}">
-                {%- if src.playlist_id == "*" %}{{ src.title }}
-                {%- else %}<a href="{{ src.url }}" target="_blank" rel="noopener">{{ src.title or src.playlist_id }}</a>{% endif %}</span>
-            </div>
-          {% endfor %}
-          
-          {% if a.trigger and a.trigger != "any" %}
-            <div class="blk trig">{{ tag("trigger") }} when songs were <span class="slot">{{ a.trigger_text }}</span> in
-              {% if a.trigger_id %}<span class="slot"><img src="/static/media/{{ a.trigger_service|lower }}.svg" alt="{{ a.trigger_service }}">
-                <a href="{{ a.trigger_url }}" target="_blank" rel="noopener">{{ a.trigger_title or a.trigger_id }}</a></span>
-              {%- else %}<span class="slot">the Take playlists</span>{% endif %}
-            </div>
-          {% endif %}
-
-          {% if a.count %}
-            <div class="blk keep">
-              keep the <span class="slot">{{ a.pick or "newest" }}</span> <span class="slot num">{{ a.count }}</span> songs
-            </div>
-          {% endif %}
-          
-          {% if a.days %}
-            <div class="blk filter">added in the last <span class="slot num">{{ a.days }}</span> days</div>
-          {% endif %}
-          
-          {% if a.compare_id %}
-            <div class="blk compare">{{ tag("compare") }} only songs that <span class="slot">{{ compares[a.compare_mode] or "aren't" }}</span> in
-              <span class="slot"><img src="/static/media/{{ a.compare_service|lower }}.svg" alt="{{ a.compare_service }}">
-                <a href="{{ a.compare_url }}" target="_blank" rel="noopener">{{ a.compare_title or a.compare_id }}</a></span>
-            </div>
-          {% endif %}
-
-          {% if a.keep_old %}<div class="blk forever">never remove songs</div>{% endif %}
-          <div class="blk out">
-            copy into
-            <span class="slot"><img src="/static/media/{{ a.dest_service|lower }}.svg" alt="{{ a.dest_service }}">
-              {%- if a.dest_url %}<a href="{{ a.dest_url }}" target="_blank" rel="noopener">{{ a.dest_name }}</a>
-              {%- else %}{{ a.dest_name }}{% endif %}</span>
-            {% if a.dest_existing %}<small>your playlist, your own songs stay</small>
-            {%- elif not a.dest_url %}<small>made on first run</small>{% endif %}
-          </div>
-        {% endif %}
-
-        {% if a.dedupe_id %}
-          <div class="blk clean">
-            remove duplicate songs from
-            <span class="slot"><img src="/static/media/{{ a.dedupe_service|lower }}.svg" alt="{{ a.dedupe_service }}">
-              <a href="{{ a.dedupe_url }}" target="_blank" rel="noopener">{{ a.dedupe_title or a.dedupe_id }}</a></span>
-          </div>
-        {% endif %}
-        <div class="blk cap status">
-          last run: {{ a.last_run or "never" }}{% if a.last_result %} · {{ a.last_result }}{% endif %}
-          {% if a.next_run %}<br>next run: {{ a.next_run }}{% endif %}
-        </div>
-        {% for u in a.unchecked %}
-          <div class="blk cap unchecked">
-            &#9888; You haven't checked <strong>{{ u.count }} song{{ "s" if u.count != 1 }}</strong> in
-            <img src="/static/media/{{ u.service|lower }}.svg" alt="{{ u.service }}"> {{ u.title }} yet.
-            <a href="/transfer/{{ u.slug }}/{{ u.playlist_id }}">Go check them &rarr;</a>
-          </div>
-        {% endfor %}
-        <div class="script-actions">
-          <form method="post" action="/automations/{{ a.id }}/run"><button class="blk-btn go">&#9654; Run now</button></form>
-          <form method="post" action="/automations/{{ a.id }}/pause">
-            {% if a.paused %}<button class="blk-btn go">&#9654; Resume</button>
-            {% else %}<button class="blk-btn halt">&#10074;&#10074; Pause</button>{% endif %}
-          </form>
-          <a class="blk-btn edit" href="/automations/{{ a.id }}/edit">&#9998; Edit</a>
-          <form method="post" action="/automations/{{ a.id }}/delete"
-                onsubmit="return confirm('Delete this automation? Its playlist stays.')">
-            <button class="blk-btn del">&#10005; Delete</button>
-          </form>
-        </div>
-      </div>
+      {% include "_auto_card.html" %}
     {% endfor %}
   </section>
 
   <script src="/static/blocks.js" defer></script>
+  <script src="/static/autorun.js" defer></script>
 {% endblock %}

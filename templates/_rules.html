@@ -18,8 +18,9 @@
   </div>
 {% endmacro %}
 
-{% macro link_input(name, value, required=False, title=None) %}
+{% macro link_input(name, value, required=False, title=None, service=None, own=False) %}
   <input class="slot wide" value="{{ title or value or '' }}" data-picker autocomplete="off"
+         {% if service %}data-picker-service="{{ service }}"{% endif %} {% if own %}data-picker-own{% endif %}
          placeholder="pick one of your playlists, or paste a link" aria-label="Playlist" {% if required %}required{% endif %}>
   <input type="hidden" name="{{ name }}" value="{{ value or '' }}" data-picker-value>
 {% endmacro %}
@@ -58,6 +59,7 @@
       </select>
       in
       {{ link_input("trigger_source", a.trigger_url, required=True, title=a.trigger_title) }}
+      <small class="trig-note" data-trig-never {% if a.every_unit != "never" %}hidden{% endif %}>&#9888; This automation only runs when you press Run now, and Run now always runs, so this Trigger does nothing. Set start to every 1 hours (or so) for it to matter.</small>
     {% endcall %}
 
     {% call optional("keep", not new and a.count, "keep") %}

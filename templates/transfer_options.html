@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% from "_rules.html" import link_input %}
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/transfer.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/automations.css') }}">
+{% endblock %}
+{% block title %}Transfer{% endblock %}
+{% block content %}
+
+  <a class="back" href="{{ back }}">&larr; Back to the songs</a>
+  <h1>Transfer {{ keys|length }} song{{ "s" if keys|length != 1 }}</h1>
+  <p class="lede">From {{ d.source }} “{{ title }}” to {{ d.dest }}. Pick where they go.</p>
+
+  <section class="card transfer-option">
+    <h2>Copy into a new {{ d.dest }} playlist</h2>
+    <form method="post" action="/transfer/{{ d.slug }}/{{ playlist_id }}/import" class="inline-form">
+      {% for k in keys %}<input type="hidden" name="key" value="{{ k }}"><input type="hidden" name="confirm" value="{{ k }}">{% endfor %}
+      <input type="hidden" name="mode" value="new">
+      <input name="name" value="{{ title }}" aria-label="New {{ d.dest }} playlist name" required>
+      <button>Create playlist</button>
+    </form>
+    {% if cost_new %}<p class="fine">{{ cost_new }}</p>{% endif %}
+  </section>
+
+  <section class="card transfer-option">
+    <h2>Copy into one of my {{ d.dest }} playlists</h2>
+    <form method="post" action="/transfer/{{ d.slug }}/{{ playlist_id }}/import">
+      {% for k in keys %}<input type="hidden" name="key" value="{{ k }}"><input type="hidden" name="confirm" value="{{ k }}">{% endfor %}
+      <input type="hidden" name="mode" value="existing">
+      <div class="inline-form">
+        <span class="picker-field">{{ link_input("dest_link", "", required=True, service=d.dest, own=True) }}</span>
+        <button>Copy into it</button>
+      </div>
+      <label class="check"><input type="checkbox" name="dedupe" value="1" checked> Get rid of duplicates in it too</label>
+      <p class="fine">Songs already in it are skipped, the rest of it stays as it is.
+        {%- if d.dest == "YouTube" %} Uses 50 YouTube units per song added, and per duplicate removed.{% endif %}</p>
+    </form>
+  </section>
+
+  <section class="card transfer-more">
+    <h2>Want more complicated stuff?</h2>
+    <p>Keep a playlist updated on a schedule, combine several playlists into one, only copy the newest songs,
+      or skip songs that are in another playlist. <a href="/automations">Check the automations &rarr;</a></p>
+  </section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='blocks.js') }}"></script>{% endblock %}

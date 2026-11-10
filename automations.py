@@ -116,8 +116,14 @@ def unchanged_youtube_sources(auto, srcs, yt):
                     and time.time() - s["checked"] < FULL_REFRESH_HOURS * 3600 for s in srcs)
     return unchanged, counts
 
+PROGRESS = {} 
+
+def step(auto, done, text):
+    PROGRESS[auto["id"]] = (round(done, 3), text)
+
 def run(auto, yt, sp, db, force=False):
     srcs = store.sources(db, auto["id"])
+    step(auto, 0.03, "Reading playlists...")
     if not force:
         store.update_automation(db, auto["id"], last_ts=time.time()) 
     results = []
@@ -133,6 +139,7 @@ def run(auto, yt, sp, db, force=False):
                         count = counts.get(s["id"]) or lean.playlist_count(yt, s["playlist_id"])
                         store.update_source(db, s["id"], item_count=count, checked=time.time())
         if auto.get("dedupe_id"):
+            step(auto, 0.95, "Removing duplicates...")
             results.append(dedupe({"service": auto["dedupe_service"], "playlist_id": auto["dedupe_id"]}, yt, sp))
     except API_ERRORS as e:
         results.append(f"Stopped: {error_message(e)}")
@@ -159,6 +166,7 @@ def sync(auto, srcs, yt, sp, db, force=False):
                 unreadable.append(src["title"] or playlist_id)
                 continue
             titles[(src["service"], playlist_id)] = loaded[0]
+            store.remember_playlist(db, auto["owner"], READS[src["service"]], playlist_id, [d.key(i) for i in loaded[1]])
             items += [dict(i, _from=d, _pl=(src["service"], playlist_id)) for i in loaded[1]]
     if unreadable and not items:
         return f"Couldn't open {', '.join(unreadable)}! (private or deleted?)"
@@ -196,7 +204,10 @@ def sync(auto, srcs, yt, sp, db, force=False):
 
     ids, needs_review, waiting, found = [], 0, 0, 0
     unchecked = {} 
-    for item in pick_items(items, auto):
+    undecided = []  # review/reject songs with no yes/no yet: the run waits until "I understand"
+    todo = pick_items(items, auto)
+    for n, item in enumerate(todo):
+        step(auto, 0.1 + 0.75 * n / max(len(todo), 1), f"Matching songs {n + 1} / {len(todo)}...")
         d = item["_from"]
         if d.source == dest_service: 
             ids.append(d.key(item))
@@ -220,17 +231,25 @@ def sync(auto, srcs, yt, sp, db, force=False):
             needs_review += 1
             if match.get("approved") is None: 
                 unchecked[item["_pl"]] = unchecked.get(item["_pl"], 0) + 1
+                undecided.append(d.key(item))
 
     auto["_capped"] = bool(waiting)
     store.update_automation(db, auto["id"], unchecked=json.dumps([
         {"service": s, "playlist_id": p, "title": titles.get((s, p)) or p, "slug": READS[s], "count": n}
-        for (s, p), n in unchecked.items()]))
+        for (s, p), n in unchecked.items()]), unchecked_keys=json.dumps(undecided))
+    new_unchecked = set(undecided) - set(json.loads(auto.get("unchecked_ok") or "[]"))
+    if new_unchecked:
+        auto["_capped"] = True  
+        n = len(new_unchecked)
+        return (f"Waiting for you: {n} song{'s' if n != 1 else ''} {'has' if n == 1 else 'have'}n't been "
+                "checked, nothing was copied. Check them, or press \"I understand\" to copy without them.")
     if not waiting:
         store.update_automation(db, auto["id"], source_keys=json.dumps(keys), trigger_keys=json.dumps(watched))
     ids = list(dict.fromkeys(ids)) 
     if auto.get("keep_old"): 
         ids = list(dict.fromkeys(json.loads(auto.get("sent_ids") or "[]") + ids))
 
+    step(auto, 0.88, f"Copying into {auto.get('dest_name') or 'the playlist'}...")
     out = writer(dest_service, yt, sp)
     if auto.get("dest_existing"):
         result = into_existing(auto, ids, out, yt, sp, db)

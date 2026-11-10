@@ -1,8 +1,15 @@
 {% extends "base.html" %}
 {% block title %}Imported{% endblock %}
 {% block content %}
-  <h1>Created “{{ name }}”</h1>
-  <p class="lede">Added {{ added }} of {{ total }} songs.</p>
+  {% if existing %}
+    <h1>Copied into “{{ name }}”</h1>
+    <p class="lede">Added {{ added }} of {{ total }} new songs{% if skipped %}, {{ skipped }} {{ "was" if skipped == 1 else "were" }} already in it{% endif %}.
+      {% if cleaned %}{{ cleaned }}{% endif %}</p>
+  {% else %}
+    <h1>Created “{{ name }}”</h1>
+    <p class="lede">Added {{ added }} of {{ total }} songs.</p>
+  {% endif %}
+
   {% if added < total %}
     <section class="notice warn">
       <p>YouTube's daily quota ran out. Import again after midnight Pacific time for the rest.</p>
@@ -12,4 +19,5 @@
     <a class="button" href="{{ url }}">Open in {{ d.dest }}</a>
     <a class="button ghost" href="{{ back }}">Back</a>
   </section>
+  <p class="fine">Want this to keep itself updated? <a href="/automations">Check the automations &rarr;</a></p>
 {% endblock %}

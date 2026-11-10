@@ -1,3 +1,5 @@
+import json
+import time
 import sqlite3
 
 DB_FILE = "matches.db"
@@ -77,7 +79,7 @@ def connect():
                          ("trigger_keys", "TEXT"),
                          ("compare_mode", "TEXT"), ("compare_service", "TEXT"), ("compare_id", "TEXT"),
                          ("compare_title", "TEXT"),
-                         ("unchecked", "TEXT"), 
+                         ("unchecked", "TEXT"), ("unchecked_keys", "TEXT"), ("unchecked_ok", "TEXT"),
                          ("dedupe_service", "TEXT"), ("dedupe_id", "TEXT"), ("dedupe_title", "TEXT")):  # "remove duplicates" block
         if column not in have:
             db.execute(f"ALTER TABLE automations ADD COLUMN {column} {kind}")
@@ -106,6 +108,14 @@ def connect():
             account_id TEXT NOT NULL,   -- Spotify user id / YouTube channel id
             uid TEXT NOT NULL,
             PRIMARY KEY (provider, account_id)
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS playlist_songs (
+            owner TEXT NOT NULL, slug TEXT NOT NULL, playlist_id TEXT NOT NULL,
+            keys TEXT NOT NULL,         -- json list of the songs seen the last time it was opened
+            seen_at REAL,
+            PRIMARY KEY (owner, slug, playlist_id)
         )
     """)
     if db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users'").fetchone():
@@ -188,6 +198,16 @@ def get_match(db, key, table="matches"):
     pk, _ = TABLES[table]
     row = db.execute(f"SELECT * FROM {table} WHERE {pk} = ?", (key,)).fetchone()
     return dict(row) if row else None
+
+def remember_playlist(db, owner, slug, playlist_id, keys):
+    """What songs a playlist had last time, so the playlist list can show checked/unchecked without API calls."""
+    db.execute("INSERT OR REPLACE INTO playlist_songs (owner, slug, playlist_id, keys, seen_at) VALUES (?, ?, ?, ?, ?)",
+               (owner, slug, playlist_id, json.dumps(keys), time.time()))
+    db.commit()
+
+def remembered_playlists(db, owner, slug):
+    rows = db.execute("SELECT playlist_id, keys FROM playlist_songs WHERE owner = ? AND slug = ?", (owner, slug))
+    return {r["playlist_id"]: json.loads(r["keys"]) for r in rows}
 
 def set_approved(db, approvals, table="matches"):
     """approvals: {key: True/False}"""

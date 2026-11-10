@@ -36,5 +36,15 @@
       <div><a href="{{ r.dst_url }}" target="_blank" rel="noopener noreferrer">{{ r.dst_title }}</a><small>{{ r.dst_sub }}</small></div>
     </div>
     {% elif r.scanned %}<span class="fine">no result</span>{% endif %}
+    {% if r.scanned %}
+      <details class="pick">
+        <summary class="override-btn">Manual override</summary>
+        <span class="pick-form">
+          <input name="link-{{ r.key }}" autocomplete="off" aria-label="Link to the right {{ d.dest }} song"
+                 placeholder="{{ 'https://open.spotify.com/track/...' if d.dest == 'Spotify' else 'https://youtu.be/...' }}">
+          <button class="rescan pick-btn" formaction="/transfer/{{ d.slug }}/{{ playlist_id }}/pick/{{ r.key }}">Use</button>
+        </span>
+      </details>
+    {% endif %}
   </td>
 </tr>

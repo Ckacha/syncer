@@ -62,17 +62,17 @@ if (controls) {
 
 const table = document.getElementById("songs");
 const tabs = document.querySelectorAll(".tab[data-show]");
-const memoryKey = "show:" + location.pathname;
 
-function show(list) {
-  if (!document.querySelector(`.tab[data-show="${list}"]`)) list = "all";
+function show(list, tab) {
+  if (!tab) tab = document.querySelector(`.tab[data-show="${list}"]`);
+  if (!tab) { list = "all"; tab = document.querySelector('.tab[data-show="all"]'); }
   table.dataset.show = list;
   tabs.forEach((t) => t.setAttribute("aria-selected", String(t.dataset.show === list)));
   const rows = table.querySelectorAll("tr[id^=row-]");
   table.querySelectorAll("tr.just-rescanned").forEach((r) => r.classList.remove("just-rescanned"));
   const any = list === "all" || [...rows].some((r) => r.classList.contains(list));
   table.querySelector(".empty-list").hidden = any;
-  try { sessionStorage.setItem(memoryKey, list); } catch {}
+  if (tab && location.pathname !== tab.pathname) history.replaceState(null, "", tab.pathname + location.hash);
 }
 
 table.addEventListener("change", async (e) => {
@@ -127,7 +127,8 @@ async function rescan(btn) {
     recount();
   }
   if (result.error) {
-    const target = (document.getElementById(row.id) || row).querySelector("td.score") || row.cells[1];
+    const target = btn.isConnected && btn.classList.contains("pick-btn") ? btn.closest(".pick")
+      : (document.getElementById(row.id) || row).querySelector("td.score") || row.cells[1];
     const note = document.createElement("small");
     note.className = "rescan-error";
     note.textContent = result.error;
@@ -138,14 +139,20 @@ async function rescan(btn) {
 }
 
 if (table) {
+  table.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || !e.target.closest(".pick-form")) return;
+    e.preventDefault();
+    e.target.closest(".pick-form").querySelector("button").click();
+  });
   table.addEventListener("click", (e) => {
     const btn = e.target.closest("button.rescan");
     if (!btn) return;
     e.preventDefault();
     rescan(btn);
   });
-  tabs.forEach((t) => t.addEventListener("click", () => show(t.dataset.show)));
-  let saved = "all";
-  try { saved = sessionStorage.getItem(memoryKey) || "all"; } catch {}
-  show(location.hash.startsWith("#row-") ? "all" : saved);
+  tabs.forEach((t) => t.addEventListener("click", (e) => { e.preventDefault(); show(t.dataset.show, t); }));
+  
+  const target = location.hash.startsWith("#row-") && document.getElementById(location.hash.slice(1));
+  const list = table.dataset.show;
+  show(target && list !== "all" && !target.classList.contains(list) ? "all" : list);
 }

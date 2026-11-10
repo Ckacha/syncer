@@ -32,7 +32,9 @@
                 <a href="/transfer/{{ d.slug }}/{{ p.id }}">
                   {% if p.image %}<img class="pl-img" src="{{ p.image }}" alt="" loading="lazy" referrerpolicy="no-referrer">
                   {% else %}<span class="pl-img" aria-hidden="true"></span>{% endif %}
-                  <span>{{ p.title }}</span>
+                  <span class="pl-name">{{ p.title }}{% if p.owner %} <small class="fine">by {{ p.owner }}</small>{% endif %}</span>
+                  {% if p.status == "done" %}<span class="pill ok">&#10003; checked</span>
+                  {% elif p.status == "todo" %}<span class="pill warn">{{ p.left }} to check</span>{% endif %}
                 </a>
               </li>
             {% endfor %}

@@ -102,3 +102,29 @@ button.rescan.spinning { animation: spin 0.9s linear infinite; }
 
 .rescan-error { display: block; margin-top: 4px; color: var(--bad); white-space: normal; max-width: 18em; }
 .tick-error { display: block; color: var(--bad, #c4505c); font-size: 0.75rem; white-space: nowrap; }
+.tabs a.tab { display: inline-block; text-decoration: none; }
+
+.transfer-option h2, .transfer-more h2 { font-size: 1.1rem; margin: 0 0 10px; }
+.transfer-option .inline-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.transfer-option .picker-field { position: relative; display: flex; flex: 1 1 16em; min-width: 0; }
+.transfer-option .picker-field .slot { flex: 1; width: 100%; }
+.transfer-option .check { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.transfer-more { background: var(--sunken); }
+.transfer-more p { margin: 0; }
+
+.pick { margin-top: 4px; }
+.pick summary { font-size: 0.75rem; color: var(--muted); cursor: pointer; width: max-content; }
+.pick-form { display: flex; gap: 4px; margin-top: 4px; }
+.pick-form input { flex: 1; min-width: 0; max-width: 20em; padding: 3px 6px; font-size: 0.8rem; }
+button.rescan.pick-btn { margin: 0; padding: 0 8px; font-size: 0.8rem; }
+button.rescan.pick-btn.spinning { animation: none; opacity: 0.6; }
+.pick summary.override-btn {
+  list-style: none; display: inline-block; padding: 1px 8px;
+  font-size: 0.75rem; color: var(--muted);
+  border: 1px solid var(--border); border-radius: var(--r-sm); background: transparent;
+}
+.pick summary.override-btn::-webkit-details-marker { display: none; }
+.pick summary.override-btn:hover, .pick[open] summary.override-btn { color: var(--text); border-color: var(--line); }
+
+.pl-list .pl-name { flex: 1; min-width: 0; }
+.pl-list .pill { flex: none; }

@@ -12,6 +12,8 @@ from spotipy.exceptions import SpotifyException
 YT_VIDEO = "https://www.youtube.com/watch?v={}"
 YT_THUMB = "https://i.ytimg.com/vi/{}/default.jpg" 
 SP_TRACK = "https://open.spotify.com/track/{}"
+SP_TRACK_LINK = re.compile(r"track[/:]([A-Za-z0-9]{22})|^\s*([A-Za-z0-9]{22})\s*$")
+YT_VIDEO_LINK = re.compile(r"(?:[?&]v=|youtu\.be/|shorts/|embed/|live/)([\w-]{11})|^\s*([\w-]{11})\s*$")
 SP_OEMBED = "https://open.spotify.com/oembed?url=https://open.spotify.com/track/{}"
 
 API_ERRORS = (SpotifyException, HttpError, requests.RequestException, httplib2.HttpLib2Error,
@@ -20,8 +22,6 @@ SAVED = "Everything that was scanned so far is saved!"
 
 
 def oembed_cover(track_id):
-    """Cover via Spotify's public oEmbed page. The Web API's batch /tracks is blocked (403) for
-    development-mode apps, and this doesn't count against the app's Spotify rate limit."""
     try:
         r = requests.get(SP_OEMBED.format(track_id), timeout=5)
         return r.json().get("thumbnail_url") if r.ok else None
@@ -36,7 +36,6 @@ def _when(seconds):
     return f"{seconds // 3600}h {seconds % 3600 // 60}m" if seconds >= 3600 else f"{seconds // 60}m"
 
 def spotify_wait(e):
-    """Seconds Spotify says to wait after a 429, or None if it isn't one."""
     if not (isinstance(e, SpotifyException) and e.http_status == 429):
         return None
     try:
@@ -45,7 +44,6 @@ def spotify_wait(e):
         return 0
 
 def lookup_stopped(e):
-    """Flash text when scanning songs fails."""
     wait = spotify_wait(e)
     if wait is not None:
         return f"Song lookup has stopped (Spotify rate limit was hit). Please try again in {_when(wait)}. {SAVED}"
@@ -135,6 +133,19 @@ class YouTubeToSpotify:
     def dest_id(self, match):
         return match["spotify_id"]
 
+    def pick(self, item, match, link):
+        m = SP_TRACK_LINK.search(link or "")
+        if not m:
+            raise ValueError("Paste a Spotify song link, like https://open.spotify.com/track/...")
+        t = self.sp.track(m.group(1) or m.group(2), market="from_token")
+        picked = dict(match or {}, **{k: item.get(k) for k in ("video_id", "title", "channel", "duration_s")})
+        picked.update(spotify_id=t["id"], spotify_name=t["name"], score=10, spotify_image=matcher.cover(t),
+                      spotify_artists=", ".join(a["name"] for a in t["artists"]))
+        picked["clean_title"] = picked.get("clean_title") or item["title"]
+        picked["artist"] = picked.get("artist") or item.get("channel") or ""
+        note = None if t.get("is_playable", True) else "Saved, but Spotify says this song can't be played in your country."
+        return picked, note
+
     def import_cost(self, count):
         return ""
 
@@ -152,8 +163,6 @@ class YouTubeToSpotify:
         return len(ids)
 
     def add_remove(self, dest_id, add, remove):
-        """Change only these songs in a playlist the user made (the rest stays, with its order and dates).
-        Returns (added, removed)."""
         for i in range(0, len(remove), 100):
             self.sp.playlist_remove_all_occurrences_of_items(dest_id, remove[i:i + 100])
         for i in range(0, len(add), 100):
@@ -165,7 +174,6 @@ class YouTubeToSpotify:
         return f"https://open.spotify.com/playlist/{dest_id}"
 
     def create(self, name, source_id, ids):
-        """Returns (playlist url, how many got added)."""
         dest_id, url = self.create_empty(name, source_id)
         return url, self.replace(dest_id, ids)
 
@@ -222,6 +230,19 @@ class SpotifyToYouTube:
     def dest_id(self, match):
         return match["video_id"]
 
+    def pick(self, item, match, link):
+        m = YT_VIDEO_LINK.search(link or "")
+        if not m:
+            raise ValueError("Paste a YouTube video link, like https://www.youtube.com/watch?v=...")
+        video_id = m.group(1) or m.group(2)
+        found = self.yt.videos().list(part="snippet", id=video_id).execute()["items"]
+        if not found:
+            raise ValueError("YouTube has no video at that link (private or deleted?).")
+        snippet = found[0]["snippet"]
+        picked = dict(match or {}, **{k: item.get(k) for k in ("track_id", "track_name", "track_artists", "duration_s")})
+        picked.update(video_id=video_id, video_title=snippet["title"], video_channel=snippet["channelTitle"], score=10)
+        return picked, None
+
     def import_cost(self, count):
         return f"Uses about {50 + 50 * count:,} of your 10,000 daily YouTube units (50 per song)."
 
@@ -260,9 +281,7 @@ class SpotifyToYouTube:
         return len(wanted & current.keys())
 
     def add_remove(self, dest_id, add, remove):
-        """Change only these songs in a playlist the user made (the rest stays). Stops quietly when the
-        YouTube quota runs out. Returns (added, removed)."""
-        current = {}  # video id -> its playlist item ids
+        current = {} 
         req = self.yt.playlistItems().list(part="snippet", playlistId=dest_id, maxResults=50)
         while req:
             resp = req.execute()

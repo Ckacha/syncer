@@ -9,11 +9,13 @@ gauth
 Need to do:
 Other apps if possible to use
     apple music
-    amazon music
+        i am not paying $99
     itunes store
-    soundcloud
-    tidal
-    deezer
+        nope
+    tidal is available
+    deezer not accepting apps
+    amazon music needs to be approved
+    soundcloud needs to be approved
 verify the google thing maybe
 
 spotify stuff for the playlists

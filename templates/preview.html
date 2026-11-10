@@ -29,27 +29,29 @@
       <p class="fine" id="scan-status" hidden></p>
       
       <div class="stats tabs" role="tablist" aria-label="Show songs">
-        <button type="button" class="tab" role="tab" data-show="all">All {{ rows | length }}</button>
-        <button type="button" class="tab ok" role="tab" data-show="auto"><span data-count="auto">{{ counts.auto }}</span> pass</button> 
-        <button type="button" class="tab warn" role="tab" data-show="review"><span data-count="review">{{ counts.review }}</span> review</button>
-        <button type="button" class="tab bad" role="tab" data-show="skip"><span data-count="skip">{{ counts.skip }}</span> reject</button>
-        {% if counts.pending %}<button type="button" class="tab" role="tab" data-show="pending">{{ counts.pending }} not scanned</button>{% endif %}
+        {% set base = "/transfer/" ~ d.slug ~ "/" ~ playlist_id %}
+        <a class="tab" role="tab" href="{{ base }}/all" data-show="all" aria-selected="{{ (show == 'all')|lower }}">All {{ rows | length }}</a>
+        <a class="tab ok" role="tab" href="{{ base }}/pass" data-show="auto" aria-selected="{{ (show == 'auto')|lower }}"><span data-count="auto">{{ counts.auto }}</span> pass</a>
+        <a class="tab warn" role="tab" href="{{ base }}/review" data-show="review" aria-selected="{{ (show == 'review')|lower }}"><span data-count="review">{{ counts.review }}</span> review</a>
+        <a class="tab bad" role="tab" href="{{ base }}/reject" data-show="skip" aria-selected="{{ (show == 'skip')|lower }}"><span data-count="skip">{{ counts.skip }}</span> reject</a>
+        {% if counts.pending %}<a class="tab" role="tab" href="{{ base }}/unscanned" data-show="pending" aria-selected="{{ (show == 'pending')|lower }}">{{ counts.pending }} not scanned</a>{% endif %}
       </div>
     </section>
 
     <section class="card importbar">
       <div class="inline-form">
-        <input name="name" value="{{ title }}" aria-label="New {{ d.dest }} playlist name">
-        <button formaction="/transfer/{{ d.slug }}/{{ playlist_id }}/import">
-          Create (<span id="ticked">{{ ticked }}</span>)
+        <input type="hidden" name="title" value="{{ title }}">
+        <button formaction="/transfer/{{ d.slug }}/{{ playlist_id }}/options">
+          Transfer (<span id="ticked">{{ ticked }}</span>) &rarr;
         </button>
+        <span class="fine">next: copy into a new playlist or one you have</span>
       </div>
       {% if d.import_cost(1) %}<p class="fine" id="cost" style="margin:8px 0 0">{{ d.import_cost(ticked) }}</p>{% endif %}
     </section>
 
     <section class="card flush">
       <div class="table-wrap">
-        <table id="songs" data-show="all" data-tick="/transfer/{{ d.slug }}/tick">
+        <table id="songs" data-show="{{ show }}" data-tick="/transfer/{{ d.slug }}/tick">
           <tr class="head">
             <th>Add</th><th>Score</th><th>Status</th>
             <th>{{ d.source }}</th><th>{{ d.dest }}</th>

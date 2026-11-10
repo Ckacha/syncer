@@ -12,6 +12,7 @@ import matcher
 import store
 import auth
 
+from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from flask import Flask, abort, flash, jsonify, redirect, render_template, request, session
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -167,12 +168,24 @@ def home():
 def transfer_start():
     d = direction(request.args.get("dir", "sp2yt"))
     playlists = d.my_playlists()
-    groups = {}
+    db = store.connect()
+    seen = store.remembered_playlists(db, uid(), d.slug)
     for p in playlists:
-        groups.setdefault(p.get("owner"), []).append(p)
-    ordered = sorted(groups.items(), key=lambda kv: (kv[0] is not None, (kv[0] or "").lower()))
-    groups = [("Made by you" if owner is None else f"By {owner}", items) for owner, items in ordered]
+        p["status"], p["left"] = playlist_status(db, d, seen.get(p["id"]))
+    groups = [(label, [p for p in playlists if p["status"] == status])
+              for status, label in (("todo", "Not checked yet"), ("done", "Checked"), ("new", "Not opened yet"))]
+    groups = [(label, items) for label, items in groups if items]
     return render_template("transfer.html", d=d, playlists=playlists, groups=groups)
+
+def playlist_status(db, d, keys):
+    if keys is None:
+        return "new", 0
+    left = 0
+    for key in keys:
+        match = store.get_match(db, key, d.table)
+        if match is None or (match.get("approved") is None and not automations.accepted(match)):
+            left += 1
+    return ("todo", left) if left else ("done", 0)
 
 @app.route("/transfer/<slug>/open")
 def transfer_open(slug):
@@ -197,8 +210,16 @@ def review_row(d, db, item):
         )
     return row
 
+REVIEW_TABS = {"all": "all", "pass": "auto", "review": "review", "reject": "skip", "unscanned": "pending"}
+
+def review_page(slug, playlist_id):
+    base = f"/transfer/{slug}/{playlist_id}"
+    came_from = urlparse(request.referrer or "").path
+    return came_from if came_from.startswith(base + "/") and came_from[len(base) + 1:] in REVIEW_TABS else base
+
 @app.route("/transfer/<slug>/<playlist_id>")
-def transfer_review(slug, playlist_id):
+@app.route("/transfer/<slug>/<playlist_id>/<any(all, pass, review, reject, unscanned):tab>")
+def transfer_review(slug, playlist_id, tab="all"):
     d, db = direction(slug), store.connect()
     loaded = d.load(playlist_id)
     if loaded is None:
@@ -206,6 +227,7 @@ def transfer_review(slug, playlist_id):
               + (", or a YouTube Mix (those can't be read)." if d.source == "YouTube" else "."))
         return redirect(f"/transfer?dir={slug}")
     title, items = loaded
+    store.remember_playlist(db, uid(), slug, playlist_id, [d.key(i) for i in items])
 
     rows = [review_row(d, db, item) for item in items]
 
@@ -215,7 +237,8 @@ def transfer_review(slug, playlist_id):
     ticked = sum(r["checked"] for r in scanned)
     return render_template(
         "preview.html", d=d, playlist_id=playlist_id, title=title, rows=rows,
-        counts=counts, scanned=len(scanned), ticked=ticked, batch=BATCH_SIZE[d.slug],
+        counts=counts, scanned=len(scanned), ticked=ticked, tab=tab,
+        batch=BATCH_SIZE[d.slug], show=REVIEW_TABS[tab], tabs=REVIEW_TABS,
     )
 
 @app.route("/test", methods=["GET", "POST"])
@@ -341,7 +364,7 @@ def transfer_scan(slug, playlist_id):
             break
     if request.headers.get("X-Scan") == "1":
         return jsonify(done=done, left=len(unscanned) - done, stopped=stopped)
-    return redirect(f"/transfer/{slug}/{playlist_id}")
+    return redirect(review_page(slug, playlist_id))
 
 @app.route("/transfer/<slug>/<playlist_id>/rescan/<key>", methods=["POST"])
 def transfer_rescan_one(slug, playlist_id, key):
@@ -365,7 +388,35 @@ def transfer_rescan_one(slug, playlist_id, key):
         return jsonify(html=html, error=error)
     if error:
         flash(error)
-    return redirect(f"/transfer/{slug}/{playlist_id}#row-{key}")
+    return redirect(f"{review_page(slug, playlist_id)}#row-{key}")
+
+@app.route("/transfer/<slug>/<playlist_id>/pick/<key>", methods=["POST"])
+def transfer_pick(slug, playlist_id, key):
+    d, db = direction(slug), store.connect()
+    save_ticks(d, db)
+    loaded = d.load(playlist_id)
+    item = next((i for i in (loaded[1] if loaded else []) if d.key(i) == key), None)
+    in_page = request.headers.get("X-Scan") == "1"
+    if item is None:
+        if in_page:
+            return jsonify(error="That song isn't in this playlist anymore.")
+        flash("That song isn't in this playlist anymore.")
+        return redirect(f"/transfer/{slug}/{playlist_id}")
+    try:
+        picked, note = d.pick(item, store.get_match(db, key, d.table), request.form.get(f"link-{key}", ""))
+    except ValueError as e:
+        picked, note = None, str(e)
+    except API_ERRORS as e:
+        picked, note = None, lookup_stopped(e)
+    if picked:
+        store.save_match(db, picked, d.table)
+        store.set_approved(db, {key: True}, d.table)
+    if in_page:
+        html = render_template("_song_row.html", r=review_row(d, db, item), d=d, playlist_id=playlist_id) if picked else None
+        return jsonify(html=html, error=note)
+    if note:
+        flash(note)
+    return redirect(f"{review_page(slug, playlist_id)}#row-{key}")
 
 @app.route("/transfer/<slug>/<playlist_id>/rescan", methods=["POST"])
 def transfer_rescan(slug, playlist_id):
@@ -374,6 +425,17 @@ def transfer_rescan(slug, playlist_id):
     if loaded:
         store.delete_matches(db, [d.key(i) for i in loaded[1]], d.table)
     return redirect(f"/transfer/{slug}/{playlist_id}")
+
+@app.route("/transfer/<slug>/<playlist_id>/options", methods=["POST"])
+def transfer_options(slug, playlist_id):
+    d, db = direction(slug), store.connect()
+    keys = [k for k in save_ticks(d, db) if (m := store.get_match(db, k, d.table)) and d.dest_id(m)]
+    if not keys:
+        flash("Nothing ticked, confirm at least one match first.")
+        return redirect(review_page(slug, playlist_id))
+    return render_template("transfer_options.html", d=d, playlist_id=playlist_id, keys=keys,
+                           title=request.form.get("title") or "Synced from " + d.source,
+                           cost_new=d.import_cost(len(keys)), back=review_page(slug, playlist_id))
 
 @app.route("/transfer/<slug>/<playlist_id>/import", methods=["POST"])
 def transfer_import(slug, playlist_id):
@@ -388,6 +450,8 @@ def transfer_import(slug, playlist_id):
         flash("Nothing ticked, confirm at least one match first.")
         return redirect(f"/transfer/{slug}/{playlist_id}")
 
+    if request.form.get("mode") == "existing":
+        return import_into_existing(d, slug, playlist_id, ids)
     name = request.form.get("name", "").strip() or f"Synced from {d.source}"
     try:
         url, added = d.create(name, playlist_id, ids)
@@ -398,6 +462,31 @@ def transfer_import(slug, playlist_id):
     return render_template(
         "imported.html", d=d, name=name, url=url, added=added, total=len(ids),
         back=f"/transfer/{slug}/{playlist_id}",
+    )
+
+def import_into_existing(d, slug, playlist_id, ids):
+    service, dest_id = automations.service_of(request.form.get("dest_link"))
+    if not dest_id or service != d.dest:
+        flash(f"Pick one of your {d.dest} playlists to copy into.")
+        return redirect(review_page(slug, playlist_id))
+    yt, sp = youtube_client(uid()), spotify_client(uid())
+    try:
+        reader = automations.reader(d.dest, yt, sp)
+        loaded = reader.load(dest_id)
+        if loaded is None:
+            flash(f"Couldn't open that {d.dest} playlist. Pick one you made.")
+            return redirect(review_page(slug, playlist_id))
+        name, current = loaded[0], {reader.key(i) for i in loaded[1]}
+        add = [x for x in ids if x not in current]
+        added, _ = d.add_remove(dest_id, add, []) if add else ([], [])
+        cleaned = (automations.dedupe({"service": d.dest, "playlist_id": dest_id}, yt, sp)
+                   if request.form.get("dedupe") == "1" else None)
+    except API_ERRORS as e:
+        flash(f"Copy stopped: {error_message(e)} Your ticks are saved, try again later.")
+        return redirect(review_page(slug, playlist_id))
+    return render_template(
+        "imported.html", d=d, name=name, url=d.playlist_url(dest_id), added=len(added), total=len(add),
+        skipped=len(ids) - len(add), cleaned=cleaned, existing=True, back=review_page(slug, playlist_id),
     )
 
 def scheduled():
@@ -441,23 +530,58 @@ def automations_page():
     db = store.connect()
     autos = store.automations(db, uid())
     for a in autos:
-        a["sources"] = store.sources(db, a["id"])
-        for src in a["sources"]:
-            src["url"] = automations.source_url(src["service"], src["playlist_id"])
-        a["dest_service"] = a.get("dest_service") or "Spotify"
-        a["dest_url"] = automations.source_url(a["dest_service"], a["dest_id"]) if a["dest_id"] else None
-        if a.get("dedupe_id"):
-            a["dedupe_url"] = automations.source_url(a["dedupe_service"], a["dedupe_id"])
-        a["trigger_text"] = automations.TRIGGERS.get(a.get("trigger") or "any")
-        a["trigger_url"] = automations.source_url(a["trigger_service"], a["trigger_id"]) if a.get("trigger_id") else None
-        a["compare_url"] = automations.source_url(a["compare_service"], a["compare_id"]) if a.get("compare_id") else None
-        a["next_run"] = next_run(a)
-        a["unchecked"] = json.loads(a.get("unchecked") or "[]")
+        card_data(db, a)
     spotify, youtube = connected()
     logins = [(service, acct) for service, on in (("YouTube", youtube), ("Spotify", spotify))
-              if on and (acct := account_info(service.lower()))]  
+              if on and (acct := account_info(service.lower()))]
     return render_template("automations.html", autos=autos, logins=logins,
                            scheduled=scheduled(), task_name=TASK_NAME, windows=sys.platform == "win32", **block_options())
+
+def card_data(db, a):
+    """Everything an automation card on /automations shows."""
+    a["sources"] = store.sources(db, a["id"])
+    for src in a["sources"]:
+        src["url"] = automations.source_url(src["service"], src["playlist_id"])
+    a["dest_service"] = a.get("dest_service") or "Spotify"
+    a["dest_url"] = automations.source_url(a["dest_service"], a["dest_id"]) if a["dest_id"] else None
+    if a.get("dedupe_id"):
+        a["dedupe_url"] = automations.source_url(a["dedupe_service"], a["dedupe_id"])
+    a["trigger_text"] = automations.TRIGGERS.get(a.get("trigger") or "any")
+    a["trigger_url"] = automations.source_url(a["trigger_service"], a["trigger_id"]) if a.get("trigger_id") else None
+    a["compare_url"] = automations.source_url(a["compare_service"], a["compare_id"]) if a.get("compare_id") else None
+    a["next_run"] = next_run(a)
+    a["unchecked"] = json.loads(a.get("unchecked") or "[]")
+    a["held"] = bool(set(json.loads(a.get("unchecked_keys") or "[]")) - set(json.loads(a.get("unchecked_ok") or "[]")))
+    a["ran_on"] = ran_on(a.get("last_run"))
+    a["result_points"] = result_points(a.get("last_result"))
+    return a
+
+def ran_on(last_run):
+    try:
+        when = datetime.strptime(last_run or "", "%Y-%m-%d %H:%M")
+    except ValueError:
+        return last_run
+    return f"{when.day}/{when.month}/{when.year} {when:%H:%M}"
+
+def result_points(text):
+    points, part, depth = [], "", 0
+    i = 0
+    text = (text or "").strip()
+    while i < len(text):
+        ch = text[i]
+        depth += (ch == "(") - (ch == ")")
+        rest = text[i + 1:].lstrip()
+        sentence_end = ch == "." and text[i + 1:i + 2] == " "
+        stat_split = ch == "," and depth == 0 and (rest[:1].isdigit() or rest.startswith("couldn't"))
+        if depth == 0 and (sentence_end or stat_split):
+            points.append(part)
+            part = ""
+            i += 2
+            continue
+        part += ch
+        i += 1
+    points.append(part)
+    return [p.strip().rstrip(".")[:1].upper() + p.strip().rstrip(".")[1:] for p in points if p.strip().rstrip(".")]
 
 def block_options():
     return {"picks": automations.PICKS, "max_songs": automations.MAX_SONGS, "triggers": automations.TRIGGERS,
@@ -672,15 +796,44 @@ def automations_edit(auto_id):
 def automations_run(auto_id):
     db = store.connect()
     auto = store.get_automation(db, auto_id, uid())
-    if auto:
+    in_page = request.headers.get("X-Scan") == "1"  
+    if not auto:
+        return jsonify(error="That automation is gone.") if in_page else redirect("/automations")
+    try:
         result = automations.run(auto, youtube_client(uid()), spotify_client(uid()), db, force=True)
-        flash(f"{auto.get('name') or auto['dest_name']}: {result}")
-        unchecked = json.loads(store.get_automation(db, auto_id, uid()).get("unchecked") or "[]")
-        if unchecked:
-            flash("You haven't checked " + ", ".join(f"{u['count']} song{'s' if u['count'] != 1 else ''} in {u['title']}" for u in unchecked)
-                  + " yet. Open the review link on the automation to check the matches.")
+    finally:
+        automations.PROGRESS.pop(auto_id, None)
+    messages = [result]
+    unchecked = json.loads(store.get_automation(db, auto_id, uid()).get("unchecked") or "[]")
+    if unchecked and not result.startswith("Waiting for you"):
+        messages.append("You haven't checked " + ", ".join(f"{u['count']} song{'s' if u['count'] != 1 else ''} in {u['title']}" for u in unchecked)
+                        + " yet. Open the review link on the automation to check the matches.")
+    if in_page:
+        a = card_data(db, store.get_automation(db, auto_id, uid()))
+        a["messages"] = []  
+        return jsonify(html=render_template("_auto_card.html", a=a, **block_options()))
+    flash(f"{auto.get('name') or auto['dest_name']}: {messages[0]}")
+    for msg in messages[1:]:
+        flash(msg)
     return redirect("/automations")
+
+@app.route("/automations/<int:auto_id>/progress")
+def automations_progress(auto_id):
+    if not store.get_automation(store.connect(), auto_id, uid()):
+        return jsonify(done=None)
+    done, step = automations.PROGRESS.get(auto_id, (None, None))
+    return jsonify(done=done, step=step)
  
+@app.route("/automations/<int:auto_id>/understand", methods=["POST"])
+def automations_understand(auto_id):
+    db = store.connect()
+    auto = store.get_automation(db, auto_id, uid())
+    if auto:
+        ok = set(json.loads(auto.get("unchecked_ok") or "[]")) | set(json.loads(auto.get("unchecked_keys") or "[]"))
+        store.update_automation(db, auto_id, unchecked_ok=json.dumps(sorted(ok)))
+        return automations_run(auto_id)
+    return redirect("/automations")
+
 @app.route("/automations/<int:auto_id>/pause", methods=["POST"])
 def automations_pause(auto_id):
     db = store.connect()

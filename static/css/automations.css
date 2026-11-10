@@ -382,3 +382,27 @@
 .blk.unchecked strong { font-weight: 700; }
 .blk.unchecked img { width: 16px; height: 16px; vertical-align: -3px; }
 .blk.unchecked a { color: inherit; font-weight: 700; text-decoration: underline; margin-left: 4px; }
+.blk.unchecked.held { gap: 8px 12px; flex-wrap: wrap; }
+.blk.unchecked.held form { margin: 0; }
+
+.blk .trig-note { flex-basis: 100%; font-size: 0.8rem; font-weight: 500; opacity: 0.9; }
+.blk .trig-note[hidden] { display: none; }
+
+.run-progress { margin: 10px 0 4px; max-width: 32em; }
+.run-progress[hidden] { display: none; }
+.run-progress .progress { margin: 0 0 4px; }
+.run-msg { font-weight: 500; }
+.run-error { color: var(--bad, #c4505c); }
+.script.just-ran { animation: ran 1.2s ease-out; }
+@keyframes ran { from { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .script.just-ran { animation: none; } }
+.run-progress .progress {
+  display: block; width: 100%; height: 6px; border: 0; border-radius: var(--r-sm);
+  background: var(--sunken); overflow: hidden; appearance: none;
+}
+.run-progress .progress::-webkit-progress-bar { background: var(--sunken); }
+.run-progress .progress::-webkit-progress-value { background: var(--accent); transition: width 0.4s ease; }
+.run-progress .progress::-moz-progress-bar { background: var(--accent); }
+
+.run-points { margin: 4px 0; padding-left: 1.2em; }
+.run-points li { margin: 1px 0; }

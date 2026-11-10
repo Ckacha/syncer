@@ -197,6 +197,8 @@ document.querySelectorAll("form.builder").forEach((form) => {
       form.querySelector(".never-part").hidden = !never;
       every.disabled = never;
       every.max = maxes[unit.value] || 720;
+      const note = form.querySelector("[data-trig-never]");
+      if (note) note.hidden = unit.value !== "never";
     };
     unit.addEventListener("change", sync);
     sync();
@@ -233,6 +235,7 @@ document.querySelectorAll("form.builder").forEach((form) => {
   }
 });
 
+let playlistsRequest = null;
 function myPlaylists() {
   playlistsRequest = playlistsRequest || fetch("/my-playlists.json", { credentials: "same-origin" })
     .then((r) => (r.ok ? r.json() : { playlists: [], problems: ["Couldn't load your playlists."] }))
@@ -247,6 +250,8 @@ const EVERYTHING = [
 ];
 
 function picker(input) {
+  const only = input.dataset.pickerService;
+  const usable = (p) => (!only || p.service === only) && (!("pickerOwn" in input.dataset) || !p.owner);
   const saved = input.nextElementSibling?.matches("[data-picker-value]") ? input.nextElementSibling : input;
   const box = document.createElement("div");
   box.className = "picker";
@@ -320,7 +325,7 @@ function picker(input) {
     const text = typing && raw !== chosenTitle ? raw.toLowerCase() : "";
     const isLink = !text.startsWith("all my") && /^https?:|list=|spotify/.test(text);
     const fits = (p) => !text || isLink || p.title.toLowerCase().includes(text);
-    const shown = data.playlists.filter(fits);
+    const shown = data.playlists.filter(usable).filter(fits);
     const everything = input.closest("[data-take]") ? EVERYTHING.filter((p) => fits(p) || p.url.includes(text)) : [];
     box.replaceChildren();
     options = [];
@@ -366,7 +371,7 @@ function picker(input) {
     const typed = input.value.trim().toLowerCase();
     if (!typed || typed === chosenTitle.toLowerCase() || !playlistsRequest) return;
     playlistsRequest.then((data) => {
-      const pool = (input.closest("[data-take]") ? EVERYTHING : []).concat(data.playlists);
+      const pool = (input.closest("[data-take]") ? EVERYTHING : []).concat(data.playlists.filter(usable));
       const hit = pool.find((p) => p.title.toLowerCase() === typed);
       if (hit) choose(hit);
     });
@@ -379,3 +384,5 @@ function picker(input) {
     else if (e.key === "Escape") { close(); }
   });
 }
+
+document.querySelectorAll("[data-picker]").forEach((input) => { if (!input.closest("form.builder")) picker(input); });
